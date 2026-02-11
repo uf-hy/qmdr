@@ -1,0 +1,43 @@
+set shell := ["bash", "-uc"]
+
+validate:
+    uv run dataset/validate_schema.py
+    uv run dataset/score_data.py
+    for f in data/*.jsonl; do \
+      uv run dataset/analyze_data.py --input "$f" --show-examples 0; \
+    done
+
+score:
+    uv run dataset/score_data.py
+
+schema:
+    uv run dataset/validate_schema.py
+
+analyze:
+    for f in data/*.jsonl; do \
+      uv run dataset/analyze_data.py --input "$f" --show-examples 0; \
+    done
+
+prepare:
+    QMD_BASE_MODEL=Qwen/Qwen3-1.7B uv run dataset/prepare_data.py --seed 42
+
+train-local:
+    just prepare
+    HF_TOKEN=${HF_TOKEN} uv run torchrun --standalone --nproc_per_node auto \
+      train.py sft --config configs/sft_local.yaml |& tee /tmp/qmd-sft-train.log
+
+grpo-local:
+    CUDA_VISIBLE_DEVICES=1,2,3 HF_TOKEN=${HF_TOKEN} uv run torchrun --standalone --nproc_per_node 3 \
+      train.py grpo --config configs/grpo.yaml |& tee /tmp/qmd-grpo-train.log
+
+gepa-local:
+    UV_CACHE_DIR=/tmp/uv-cache LITELLM_CACHE_DIR=/tmp/litellm-cache OLLAMA_API_BASE=http://localhost:11434 \
+      uv run python gepa/dspy_gepa.py \
+      --input data/qmd_expansion_v2.jsonl \
+      --model ollama/glm-4.7-flash:Q8_0 \
+      --reflection-model ollama/glm-4.7-flash:Q8_0 \
+      --max-metric-calls 100 --limit 20 \
+      --valset data/qmd_expansion_handcrafted.jsonl --val-limit 20 \
+      --max-tokens 512 --reflection-max-tokens 512 \
+      --emit gepa/gepa_outputs_glm.jsonl \
+      --save-prompt gepa/best_prompt_glm.txt
