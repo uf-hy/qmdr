@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       QMD_SILICONFLOW_API_KEY: ${{ secrets.QMD_SILICONFLOW_API_KEY }}
+      QMD_EMBED_PROVIDER: siliconflow
+      QMD_QUERY_EXPANSION_PROVIDER: siliconflow
       QMD_RERANK_PROVIDER: siliconflow
       QMD_RERANK_MODE: llm
       QMD_CONFIG_DIR: /tmp/qmdr-ci-config
