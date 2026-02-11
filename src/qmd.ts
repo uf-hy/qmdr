@@ -90,6 +90,31 @@ import { handleCollectionCommand } from "./app/commands/collection.js";
 import { handleSearchCommand, handleVSearchCommand, handleQueryCommand } from "./app/commands/search.js";
 import { handleCleanupCommand, handlePullCommand, handleStatusCommand, handleUpdateCommand, handleEmbedCommand, handleMcpCommand, handleDoctorCommand } from "./app/commands/maintenance.js";
 import { createLLMService } from "./app/services/llm-service.js";
+import { existsSync } from "fs";
+import { join } from "path";
+
+// =============================================================================
+// Load config from ~/.config/qmd/.env (single source of truth)
+// Environment variables set externally take priority (won't be overwritten)
+// =============================================================================
+
+const qmdConfigDir = process.env.QMD_CONFIG_DIR || join(homedir(), ".config", "qmd");
+const qmdEnvPath = join(qmdConfigDir, ".env");
+if (existsSync(qmdEnvPath)) {
+  const envContent = readFileSync(qmdEnvPath, "utf-8");
+  for (const line of envContent.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const val = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
+    // Don't override existing env vars (system/process env takes priority)
+    if (!process.env[key]) {
+      process.env[key] = val;
+    }
+  }
+}
 
 // Enable production mode - allows using default database path
 // Tests must set INDEX_PATH or use createStore() with explicit path
