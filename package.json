@@ -1,6 +1,6 @@
 {
   "name": "qmdr",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Remote-first CLI search engine for markdown docs, notes, and knowledge bases",
   "type": "module",
   "bin": {
