@@ -6,6 +6,12 @@ texts/
 .cursor/
 .tmp_*
 *.bak.*
+*.bun-build
+.*.bun-build
 qmd
 node_modules/
 .env
+.github/
+test/
+*.test.ts
+CLAUDE.md
