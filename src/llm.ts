@@ -26,7 +26,16 @@ type LlamaModel = any;
 type LlamaEmbeddingContext = any;
 type LlamaToken = any;
 let LlamaChatSession: any = null;
-getLlamaCpp().then(m => { LlamaChatSession = m.LlamaChatSession; }).catch(() => {});
+// Lazy-init LlamaChatSession only when actually needed (avoid eager import crash on Linux CI)
+async function ensureLlamaChatSession() {
+  if (!LlamaChatSession) {
+    try {
+      const m = await getLlamaCpp();
+      LlamaChatSession = m.LlamaChatSession;
+    } catch {}
+  }
+  return LlamaChatSession;
+}
 import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, statSync, unlinkSync, readdirSync, readFileSync, writeFileSync } from "fs";
