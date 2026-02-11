@@ -1,0 +1,93 @@
+name: CI Test
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      QMD_SILICONFLOW_API_KEY: ${{ secrets.QMD_SILICONFLOW_API_KEY }}
+      QMD_RERANK_PROVIDER: siliconflow
+      QMD_RERANK_MODE: llm
+      QMD_CONFIG_DIR: /tmp/qmdr-ci-config
+      XDG_CACHE_HOME: /tmp/qmdr-ci-cache
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run qmd integration test flow
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$QMD_CONFIG_DIR" "$XDG_CACHE_HOME"
+
+          TEST_DOCS_DIR="/tmp/qmdr-test-docs"
+          rm -rf "$TEST_DOCS_DIR"
+          mkdir -p "$TEST_DOCS_DIR"
+
+          cat > "$TEST_DOCS_DIR/cooking-tips.md" <<'EOF'
+          # Cooking Tips
+
+          Start by heating the pan before adding oil.
+          Season food in layers and taste as you cook.
+          For pasta, save a small cup of pasta water to help sauces bind.
+          EOF
+
+          cat > "$TEST_DOCS_DIR/git-workflow.md" <<'EOF'
+          # Git Workflow
+
+          Create a feature branch for each task.
+          Keep commits small and focused.
+          Rebase on main before opening a pull request.
+          EOF
+
+          cat > "$TEST_DOCS_DIR/travel-japan.md" <<'EOF'
+          # Travel in Japan
+
+          Trains are reliable and often the fastest option between cities.
+          IC cards are convenient for local transit.
+          Try regional food specialties in each destination.
+          EOF
+
+          bun src/qmd.ts collection add "$TEST_DOCS_DIR" --name test-ci --mask "*.md"
+          bun src/qmd.ts embed
+          bun src/qmd.ts doctor
+
+          query_output_1="$(bun src/qmd.ts query "how to make pasta" -c test-ci)"
+          query_status_1=$?
+          if [ "$query_status_1" -ne 0 ]; then
+            echo "Query 1 failed with exit code $query_status_1"
+            exit 1
+          fi
+          if [ -z "$(echo "$query_output_1" | tr -d '[:space:]')" ]; then
+            echo "Query 1 returned empty output"
+            exit 1
+          fi
+          echo "$query_output_1"
+
+          bun src/qmd.ts query "git branch strategy" -c test-ci
+          query_status_2=$?
+          if [ "$query_status_2" -ne 0 ]; then
+            echo "Query 2 failed with exit code $query_status_2"
+            exit 1
+          fi
+
+          bun src/qmd.ts search "japan" -c test-ci
+          query_status_3=$?
+          if [ "$query_status_3" -ne 0 ]; then
+            echo "Search failed with exit code $query_status_3"
+            exit 1
+          fi
