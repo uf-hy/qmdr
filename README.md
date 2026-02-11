@@ -71,7 +71,7 @@ bun install -g github:uf-hy/qmdr
 qmd doctor
 ```
 
-Requires: [Bun](https://bun.sh) >= 1.0 · macOS: `brew install sqlite`
+Requires: [Bun](https://bun.sh) 1.3.0–1.3.6 (1.3.7+ has [sqlite-vec segfault](https://github.com/oven-sh/bun/issues/26572)) · macOS: `brew install sqlite`
 
 ## Credits
 

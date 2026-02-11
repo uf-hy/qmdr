@@ -68,7 +68,12 @@ Continue to Phase 2.
 bun --version 2>/dev/null || echo "NOT_INSTALLED"
 ```
 
-**If Bun is installed:** skip to "Install QMDR" below.
+**If Bun is installed:** check version. **Bun ≤ 1.3.6 is required** — versions 1.3.7+ have a known sqlite-vec segfault bug on Linux ([oven-sh/bun#26572](https://github.com/oven-sh/bun/issues/26572)). If the user has a newer version, recommend Path B (pre-built binary) or downgrade:
+
+```bash
+# Downgrade to 1.3.6
+curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.6"
+```
 
 **If Bun is NOT installed:** ask the user:
 
@@ -80,11 +85,11 @@ bun --version 2>/dev/null || echo "NOT_INSTALLED"
 #### Install Bun
 
 ```bash
-# International
-curl -fsSL https://bun.sh/install | bash
+# International (pinned to 1.3.6 — newer versions have sqlite-vec segfault)
+curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.6"
 
 # China (if above fails or is slow)
-curl -fsSL https://bun.sh/install | BUN_INSTALL_MIRROR=https://npmmirror.com/mirrors/bun bash
+curl -fsSL https://bun.sh/install | BUN_INSTALL_MIRROR=https://npmmirror.com/mirrors/bun bash -s "bun-v1.3.6"
 ```
 
 After install, verify: `bun --version`
@@ -310,7 +315,7 @@ This runs test queries and evaluates expansion quality.
 
 QMDR is a **native memory backend** for OpenClaw — no MCP needed. OpenClaw spawns QMDR directly.
 
-**→ See [docs/setup-openclaw.md](docs/setup-openclaw.md) for detailed configuration.**
+**→ See [docs/setup-openclaw.md](https://github.com/uf-hy/qmdr/blob/main/docs/setup-openclaw.md) for detailed configuration.**
 
 After setup, add this to `TOOLS.md` in the workspace:
 
@@ -417,6 +422,7 @@ After setup, add this to `AGENTS.md` in the project root:
 | `qmd: command not found` | `bun link`, ensure `~/.bun/bin` in PATH |
 | sqlite-vec load error | macOS: `brew install sqlite`; or set `QMD_SQLITE_VEC_PATH` |
 | sqlite-vec `/$bunfs/root/` error | Switch to source mode (bun install) instead of compiled binary |
+| Segfault on Linux | Bun ≥1.3.7 has sqlite-vec crash — downgrade: `curl -fsSL https://bun.sh/install \| bash -s "bun-v1.3.6"` |
 | Dimension mismatch | `qmd embed -f` to rebuild with current model |
 | Slow queries (>5s) | Run `qmd doctor` — switch to non-thinking models |
 | `Script not found "query"` | Don't use `"bun /path/to/qmd.ts"` as command; use direct path with shebang |

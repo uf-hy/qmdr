@@ -10,7 +10,7 @@ OpenClaw has a native QMDR integration — no MCP, no middleware. When configure
 
 ## Step 1: Install QMDR and configure API keys
 
-Follow [AI-SETUP.md](../AI-SETUP.md) Phase 2-5.
+Follow [AI-SETUP.md](https://github.com/uf-hy/qmdr/blob/main/AI-SETUP.md) Phase 2-5.
 
 ## Step 2: Index workspace and verify
 

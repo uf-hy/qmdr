@@ -2,7 +2,7 @@
 name: qmdr
 description: Search personal markdown knowledge bases, notes, meeting transcripts, and documentation using QMDR - a remote-first hybrid search engine. Combines BM25 keyword search, vector semantic search, and cloud LLM re-ranking for high-quality recall. Use when users ask to search notes, find documents, look up information in their knowledge base, retrieve meeting notes, or search documentation. Triggers on "search markdown files", "search my notes", "find in docs", "look up", "what did I write about", "meeting notes about".
 license: MIT
-compatibility: Requires qmd CLI. Install via `bun install -g github:uf-hy/qmdr`.
+compatibility: Requires qmd CLI. Install via `bun install -g github:uf-hy/qmdr`. Bun ≤1.3.6 required (1.3.7+ has sqlite-vec segfault).
 metadata:
   author: uf-hy
   version: "1.0.0"
@@ -169,4 +169,4 @@ This plugin configures the qmd MCP server automatically. When available, prefer 
 | `qmd_multi_get` | `qmd multi-get` | Retrieve multiple documents |
 | `qmd_status` | `qmd status` | Index health and collection info |
 
-For manual MCP setup without the plugin, see [references/mcp-setup.md](references/mcp-setup.md).
+For manual MCP setup without the plugin, see [references/mcp-setup.md](https://github.com/uf-hy/qmdr/blob/main/skills/qmdr/references/mcp-setup.md).
