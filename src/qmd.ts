@@ -295,9 +295,10 @@ function getRemoteLLM(): RemoteLLM | null {
     if (rerankProvider === 'gemini' || rerankProvider === 'openai') {
       effectiveRerankProvider = rerankProvider;
     } else if (rerankProvider === 'siliconflow') {
-      effectiveRerankProvider = sfApiKey ? 'openai' : undefined;
+      // LLM rerank via SiliconFlow's OpenAI-compatible API
+      effectiveRerankProvider = 'siliconflow';
     } else {
-      effectiveRerankProvider = sfApiKey ? 'openai' : (gmApiKey ? 'gemini' : (oaApiKey ? 'openai' : undefined));
+      effectiveRerankProvider = sfApiKey ? 'siliconflow' : (gmApiKey ? 'gemini' : (oaApiKey ? 'openai' : undefined));
     }
   }
   const effectiveEmbedProvider = embedProvider || (sfApiKey ? 'siliconflow' : (oaApiKey ? 'openai' : undefined));
@@ -308,6 +309,7 @@ function getRemoteLLM(): RemoteLLM | null {
 
   const config: RemoteLLMConfig = {
     rerankProvider: effectiveRerankProvider || 'siliconflow',
+    rerankMode: rerankMode as 'llm' | 'rerank',
     embedProvider: effectiveEmbedProvider,
     queryExpansionProvider: effectiveQueryExpansionProvider,
   };

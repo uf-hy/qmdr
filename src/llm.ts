@@ -973,6 +973,7 @@ export class LlamaCpp implements LLM {
 
 export type RemoteLLMConfig = {
   rerankProvider: 'siliconflow' | 'gemini' | 'openai';
+  rerankMode?: 'llm' | 'rerank'; // 'llm' = chat model, 'rerank' = dedicated rerank API
   embedProvider?: 'siliconflow' | 'openai'; // remote embedding provider (optional)
   queryExpansionProvider?: 'siliconflow' | 'gemini' | 'openai'; // remote query expansion (optional)
   siliconflow?: {
@@ -1049,6 +1050,23 @@ export class RemoteLLM implements LLM {
     options: RerankOptions = {}
   ): Promise<RerankResult> {
     if (this.config.rerankProvider === 'siliconflow') {
+      // LLM mode: use SiliconFlow's OpenAI-compatible chat API for reranking
+      if (this.config.rerankMode === 'llm') {
+        // Build a temporary openai-like config from siliconflow settings
+        const sf = this.config.siliconflow;
+        if (!sf?.apiKey) throw new Error("SiliconFlow API key required for LLM rerank");
+        const savedOpenai = this.config.openai;
+        this.config.openai = {
+          apiKey: sf.apiKey,
+          baseUrl: (sf.baseUrl || "https://api.siliconflow.cn/v1").replace(/\/$/, ""),
+          model: sf.queryExpansionModel || "zai-org/GLM-4.5-Air",
+        };
+        try {
+          return await this.rerankWithOpenAI(query, documents, options);
+        } finally {
+          this.config.openai = savedOpenai;
+        }
+      }
       return this.rerankWithSiliconflow(query, documents, options);
     }
     if (this.config.rerankProvider === 'openai') {
