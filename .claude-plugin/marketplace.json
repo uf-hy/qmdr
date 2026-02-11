@@ -1,14 +1,14 @@
 {
-	"name": "qmd",
+	"name": "qmdr",
 	"owner": {
 		"name": "uf-hy",
 		"email": "uf-hy@users.noreply.github.com"
 	},
 	"plugins": [
 		{
-			"name": "qmd",
+			"name": "qmdr",
 			"source": "./",
-			"description": "Search and retrieve documents from local markdown files with hybrid BM25 + vector + LLM reranking.",
+			"description": "Search personal markdown files with hybrid BM25 + vector + cloud LLM reranking.",
 			"version": "1.0.0",
 			"author": {
 				"name": "uf-hy",
@@ -16,7 +16,8 @@
 			},
 			"repository": "https://github.com/uf-hy/qmdr",
 			"license": "MIT",
-			"keywords": ["markdown", "search", "qmd", "memory", "reranking"],
+			"keywords": ["markdown", "search", "qmd", "memory", "reranking", "remote"],
+			"skills": ["./skills/"],
 			"mcpServers": {
 				"qmd": {
 					"command": "qmd",

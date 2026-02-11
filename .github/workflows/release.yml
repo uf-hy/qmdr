@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin-arm64
+            artifact: qmd-darwin-arm64
+          - os: macos-13
+            target: darwin-x64
+            artifact: qmd-darwin-x64
+          - os: ubuntu-latest
+            target: linux-x64
+            artifact: qmd-linux-x64
+          - os: ubuntu-latest
+            target: linux-arm64
+            artifact: qmd-linux-arm64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build binary
+        run: |
+          if [ "${{ matrix.target }}" = "linux-arm64" ]; then
+            bun build --compile --target=bun-linux-arm64 src/qmd.ts --outfile ${{ matrix.artifact }}
+          else
+            bun build --compile src/qmd.ts --outfile ${{ matrix.artifact }}
+          fi
+
+      - name: Test binary
+        if: matrix.target != 'linux-arm64'
+        run: |
+          ./${{ matrix.artifact }} --help
+          ./${{ matrix.artifact }} status 2>/dev/null || true
+          echo "✅ Binary runs successfully"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Make binaries executable
+        run: chmod +x qmd-*
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: qmd-*
+          generate_release_notes: true
+          draft: false

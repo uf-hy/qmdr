@@ -36,45 +36,33 @@ That's it. Your AI will handle the rest.
 
 ## Integrations
 
-### OpenClaw (native)
+### OpenClaw (native memory backend)
 
 QMDR is a **native memory backend** for [OpenClaw](https://github.com/openclaw/openclaw). No MCP, no middleware — OpenClaw spawns QMDR directly as its memory search engine. Your `memory_search` calls go through QMDR's full hybrid pipeline automatically.
 
 → [Setup guide](AI-SETUP.md#openclaw-integration)
 
-### OpenCode (MCP)
+### OpenCode (skill)
 
-Add to your `.opencode.json`:
-
-```json
-{
-  "mcpServers": {
-    "qmd": {
-      "command": "qmd",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-### Claude Code (MCP)
+Install the QMDR skill for [OpenCode](https://opencode.ai):
 
 ```bash
-claude mcp add qmd -- qmd mcp
+mkdir -p ~/.config/opencode/skills/qmdr
+curl -sL https://raw.githubusercontent.com/uf-hy/qmdr/main/skills/qmdr/SKILL.md \
+  -o ~/.config/opencode/skills/qmdr/SKILL.md
 ```
 
-Or add to `~/.claude/settings.json`:
+### Claude Code (skill)
 
-```json
-{
-  "mcpServers": {
-    "qmd": {
-      "command": "qmd",
-      "args": ["mcp"]
-    }
-  }
-}
+Install the QMDR skill for [Claude Code](https://claude.ai/code):
+
+```bash
+mkdir -p ~/.claude/skills/qmdr
+curl -sL https://raw.githubusercontent.com/uf-hy/qmdr/main/skills/qmdr/SKILL.md \
+  -o ~/.claude/skills/qmdr/SKILL.md
 ```
+
+> MCP also available: `claude mcp add qmd -- qmd mcp`
 
 ## Manual Install
 

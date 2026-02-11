@@ -36,45 +36,33 @@
 
 ## 集成方式
 
-### OpenClaw（原生支持）
+### OpenClaw（原生记忆后端）
 
 QMDR 是 [OpenClaw](https://github.com/openclaw/openclaw) 的**原生记忆后端**。没有 MCP 中间层 — OpenClaw 直接调用 QMDR 作为记忆搜索引擎。你的 `memory_search` 调用会自动走 QMDR 的完整混合搜索管线。
 
 → [配置指南](../AI-SETUP.md#openclaw-integration)
 
-### OpenCode（MCP）
+### OpenCode（Skill）
 
-在 `.opencode.json` 中添加：
-
-```json
-{
-  "mcpServers": {
-    "qmd": {
-      "command": "qmd",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-### Claude Code（MCP）
+为 [OpenCode](https://opencode.ai) 安装 QMDR skill：
 
 ```bash
-claude mcp add qmd -- qmd mcp
+mkdir -p ~/.config/opencode/skills/qmdr
+curl -sL https://raw.githubusercontent.com/uf-hy/qmdr/main/skills/qmdr/SKILL.md \
+  -o ~/.config/opencode/skills/qmdr/SKILL.md
 ```
 
-或在 `~/.claude/settings.json` 中添加：
+### Claude Code（Skill）
 
-```json
-{
-  "mcpServers": {
-    "qmd": {
-      "command": "qmd",
-      "args": ["mcp"]
-    }
-  }
-}
+为 [Claude Code](https://claude.ai/code) 安装 QMDR skill：
+
+```bash
+mkdir -p ~/.claude/skills/qmdr
+curl -sL https://raw.githubusercontent.com/uf-hy/qmdr/main/skills/qmdr/SKILL.md \
+  -o ~/.claude/skills/qmdr/SKILL.md
 ```
+
+> 也支持 MCP：`claude mcp add qmd -- qmd mcp`
 
 ## 手动安装
 
