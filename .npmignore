@@ -1,0 +1,11 @@
+finetune/
+archive/
+texts/
+*.sqlite
+.DS_Store
+.cursor/
+.tmp_*
+*.bak.*
+qmd
+node_modules/
+.env

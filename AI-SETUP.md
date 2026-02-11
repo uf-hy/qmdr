@@ -414,7 +414,7 @@ After setup, add this to `AGENTS.md` in the project root:
 ## Environment Variables Reference
 
 | Variable | Default | Purpose |
-|----------|---------|---------||
+|----------|---------|---------| 
 | **API Keys** | | |
 | `QMD_SILICONFLOW_API_KEY` | — | SiliconFlow |
 | `QMD_GEMINI_API_KEY` | — | Google Gemini |

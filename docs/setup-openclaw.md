@@ -99,11 +99,22 @@ Then: `systemctl --user daemon-reload && systemctl --user restart openclaw`
 
 ## Step 5: Restart and verify
 
+Before restarting, confirm:
+1. `qmd doctor` passes with no errors ✅
+2. `qmd query "test"` returns results ✅
+3. API keys are in launchd/systemd env (Step 4) ✅
+
 ```bash
 openclaw gateway restart
+
+# Or if using OpenClaw CLI:
+openclaw gateway stop && openclaw gateway start
 ```
 
-Then test by asking your bot about past conversations, or check logs for `"backend": "qmd"`.
+After restart, verify QMDR is active:
+- Ask your bot about something from past conversations
+- Check that `memory_search` results show `"provider": "qmd"` (not `"sqlite"`)
+- If results seem to fall back to basic search, check `qmd doctor` inside the OpenClaw process environment
 
 ## Step 6: Add usage tips to TOOLS.md
 
