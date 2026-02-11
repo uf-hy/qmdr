@@ -41,16 +41,22 @@ jobs:
       - name: Build binary
         run: |
           if [ "${{ matrix.target }}" = "linux-arm64" ]; then
-            bun build --compile --target=bun-linux-arm64 src/qmd.ts --outfile ${{ matrix.artifact }}
+            bun build --compile --target=bun-linux-arm64 \
+              --external node-llama-cpp --external @node-llama-cpp \
+              src/qmd.ts --outfile ${{ matrix.artifact }}
           else
-            bun build --compile src/qmd.ts --outfile ${{ matrix.artifact }}
+            bun build --compile \
+              --external node-llama-cpp --external @node-llama-cpp \
+              src/qmd.ts --outfile ${{ matrix.artifact }}
           fi
 
       - name: Test binary
         if: matrix.target != 'linux-arm64'
+        env:
+          QMD_SILICONFLOW_API_KEY: ${{ secrets.QMD_SILICONFLOW_API_KEY }}
         run: |
           ./${{ matrix.artifact }} --help
-          ./${{ matrix.artifact }} status 2>/dev/null || true
+          ./${{ matrix.artifact }} doctor 2>&1 || true
           echo "✅ Binary runs successfully"
 
       - uses: actions/upload-artifact@v4
