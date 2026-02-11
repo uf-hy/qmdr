@@ -79,7 +79,11 @@ Edit `~/.openclaw/openclaw.json` — add/merge the `memory` block:
 
 API keys must be available to the OpenClaw process, not just your shell.
 
-**macOS (launchd):**
+**Option A: Use `~/.config/qmd/.env` (recommended — works for all install types)**
+
+QMDR auto-loads this file on startup. If you already configured it in Phase 3-5, you're done — OpenClaw will inherit these settings automatically.
+
+**Option B: macOS (launchd) — set in the service plist:**
 Add to `~/Library/LaunchAgents/ai.openclaw.gateway.plist` under `EnvironmentVariables`:
 ```xml
 <key>QMD_SILICONFLOW_API_KEY</key>
@@ -89,13 +93,15 @@ Add to `~/Library/LaunchAgents/ai.openclaw.gateway.plist` under `EnvironmentVari
 ```
 Then reload: `launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist && launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist`
 
-**Linux (systemd):**
+**Option C: Linux (systemd) — set in the service unit:**
 Add to the service unit under `[Service]`:
 ```ini
 Environment=QMD_SILICONFLOW_API_KEY=sk-your-key
 Environment=QMD_GEMINI_API_KEY=your-gemini-key
 ```
 Then: `systemctl --user daemon-reload && systemctl --user restart openclaw`
+
+**Priority:** System/process env vars > `~/.config/qmd/.env` (env vars override .env if both are set).
 
 ## Step 5: Restart and verify
 

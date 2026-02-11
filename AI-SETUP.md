@@ -112,9 +112,16 @@ chmod +x /usr/local/bin/qmd
 
 ---
 
-## Phase 3: Configure Embedding (SiliconFlow)
+## Phase 3: Configure API Keys
 
-SiliconFlow provides the embedding model. Ask:
+All configuration goes into one file: `~/.config/qmd/.env`
+
+QMDR automatically reads this file on startup (both Bun and binary installs). Create it:
+
+```bash
+mkdir -p ~/.config/qmd
+nano ~/.config/qmd/.env   # or any editor
+```
 
 > **Do you have a SiliconFlow API key?**
 >
@@ -124,8 +131,9 @@ SiliconFlow provides the embedding model. Ask:
 
 ### Option 1: User has key
 
-```bash
-export QMD_SILICONFLOW_API_KEY=sk-user-provided-key
+Write to `~/.config/qmd/.env`:
+```
+QMD_SILICONFLOW_API_KEY=sk-user-provided-key
 ```
 
 ### Option 2: Guide to get key
@@ -142,76 +150,45 @@ export QMD_SILICONFLOW_API_KEY=sk-user-provided-key
 > 2. Go to API Keys page → Create new key
 > 3. Free tier includes embedding models
 
-After user provides key:
-```bash
-export QMD_SILICONFLOW_API_KEY=sk-user-provided-key
+After user provides key, write to `~/.config/qmd/.env`:
+```
+QMD_SILICONFLOW_API_KEY=sk-user-provided-key
 ```
 
-**International users — additional API endpoint config:**
-```bash
-export QMD_SILICONFLOW_BASE_URL=https://api.siliconflow.com/v1
+**International users — add this line too:**
+```
+QMD_SILICONFLOW_BASE_URL=https://api.siliconflow.com/v1
 ```
 (China users don't need this — the default `https://api.siliconflow.cn/v1` works)
 
 ### Option 3: Custom provider
 
-Ask for:
-1. API endpoint URL (must be OpenAI-compatible)
-2. API key
-
-```bash
-export QMD_OPENAI_API_KEY=user-key
-export QMD_OPENAI_BASE_URL=https://their-endpoint.com/v1
-export QMD_EMBED_PROVIDER=openai
+Ask for endpoint URL and API key, then write to `~/.config/qmd/.env`:
 ```
-
-Test connectivity:
-```bash
-curl -s "$QMD_OPENAI_BASE_URL/models" -H "Authorization: Bearer $QMD_OPENAI_API_KEY" | head -5
+QMD_OPENAI_API_KEY=user-key
+QMD_OPENAI_BASE_URL=https://their-endpoint.com/v1
+QMD_EMBED_PROVIDER=openai
 ```
 
 ### Configure embedding model
 
 Default: `Qwen/Qwen3-Embedding-8B` (on SiliconFlow, free)
 
-Ask:
-> Keep the default embedding model (`Qwen/Qwen3-Embedding-8B`), or choose your own?
->
-> If you don't know which to pick, the default is good.
+> Keep the default embedding model, or choose your own?
 
-If user wants to change:
-```bash
-export QMD_SILICONFLOW_EMBED_MODEL=their-chosen-model
-# or for custom provider:
-export QMD_OPENAI_EMBED_MODEL=their-chosen-model
+If user wants to change, add to `.env`:
 ```
-
-### Configure embedding dimensions
-
-> Do you know the output dimensions of your embedding model?
->
-> 1. **Use default** (auto-detect from model — recommended)
-> 2. **I know the dimensions** — let me enter it
-> 3. **I don't know** — please look it up for me
-
-If option 3: search the web for "{model_name} embedding dimensions" and inform the user.
-
-Note: If dimensions change after initial indexing, user must run `qmd embed -f` to rebuild.
+QMD_SILICONFLOW_EMBED_MODEL=their-chosen-model
+# or for custom provider:
+QMD_OPENAI_EMBED_MODEL=their-chosen-model
+```
 
 ### Configure chunk size
 
-Default: `200` tokens per chunk, `40` tokens overlap.
-
-> Chunk size controls how documents are split for embedding.
->
-> - **Default: 200 tokens** (recommended for most use cases)
-> - Larger chunks = more context per result, but less precise
-> - Smaller chunks = more precise, but may lose context
-
-```bash
-# Only if user wants to change defaults:
-export QMD_CHUNK_SIZE_TOKENS=200      # default
-export QMD_CHUNK_OVERLAP_TOKENS=40    # default
+Default: `200` tokens per chunk, `40` tokens overlap. Only add to `.env` if user wants to change:
+```
+QMD_CHUNK_SIZE_TOKENS=200
+QMD_CHUNK_OVERLAP_TOKENS=40
 ```
 
 ---
@@ -222,22 +199,19 @@ Query expansion rewrites the user's search query into multiple variations (keywo
 
 Default: `GLM-4.5-Air` on SiliconFlow (~¥1/month, fast, good quality).
 
-Ask:
-> Use the default query expansion model (`GLM-4.5-Air` on SiliconFlow), or use your own?
+> Use the default query expansion model, or use your own?
 >
 > 1. **Default** (GLM-4.5-Air on SiliconFlow — recommended)
 > 2. **Use the reranking provider's model** (configured in next step)
 > 3. **Custom** — I want to specify a model
 
-If option 2: will be configured after Phase 5.
-
-If option 3:
-```bash
-export QMD_QUERY_EXPANSION_PROVIDER=openai  # or gemini
-# For OpenAI-compatible:
-export QMD_OPENAI_MODEL=their-model-name
-# For Gemini:
-export QMD_GEMINI_API_KEY=their-key
+If option 3, add to `~/.config/qmd/.env`:
+```
+QMD_QUERY_EXPANSION_PROVIDER=openai
+QMD_OPENAI_MODEL=their-model-name
+# Or for Gemini:
+QMD_QUERY_EXPANSION_PROVIDER=gemini
+QMD_GEMINI_API_KEY=their-key
 ```
 
 ---
@@ -256,9 +230,10 @@ Reranking uses a large language model to judge which search results are truly re
 
 ### Option 1: User has Gemini key
 
-```bash
-export QMD_GEMINI_API_KEY=user-key
-export QMD_RERANK_PROVIDER=gemini
+Add to `~/.config/qmd/.env`:
+```
+QMD_GEMINI_API_KEY=user-key
+QMD_RERANK_PROVIDER=gemini
 ```
 
 ### Option 2: Guide to get Gemini key
@@ -268,48 +243,34 @@ export QMD_RERANK_PROVIDER=gemini
 > 2. Click "Get API key" → Create key
 > 3. Free tier: 15 RPM / 1M tokens per day (more than enough for reranking)
 
-Note for China users: Gemini API may require a proxy. If the user has a proxy:
-```bash
-export QMD_GEMINI_BASE_URL=https://their-proxy-endpoint
+Note for China users: Gemini API may require a proxy. Add to `.env`:
+```
+QMD_GEMINI_BASE_URL=https://their-proxy-endpoint
 ```
 
 If no proxy available, recommend Option 3 instead.
 
 ### Option 3: Alternative reranking
 
+Add to `~/.config/qmd/.env`:
+
 **Using SiliconFlow LLM rerank (no extra key needed):**
-```bash
-export QMD_RERANK_PROVIDER=siliconflow
-export QMD_RERANK_MODE=llm
+```
+QMD_RERANK_PROVIDER=siliconflow
+QMD_RERANK_MODE=llm
 ```
 
-**Using a dedicated rerank model API (e.g. BAAI/bge-reranker):**
-```bash
-export QMD_RERANK_PROVIDER=siliconflow
-export QMD_RERANK_MODE=rerank
-export QMD_SILICONFLOW_RERANK_MODEL=BAAI/bge-reranker-v2-m3
+**Using a dedicated rerank model API:**
+```
+QMD_RERANK_PROVIDER=siliconflow
+QMD_RERANK_MODE=rerank
+QMD_SILICONFLOW_RERANK_MODEL=BAAI/bge-reranker-v2-m3
 ```
 
 **Using OpenAI-compatible endpoint:**
-```bash
-export QMD_RERANK_PROVIDER=openai
-export QMD_RERANK_MODE=llm
-export QMD_OPENAI_API_KEY=their-key
-export QMD_OPENAI_BASE_URL=https://their-endpoint/v1
 ```
-
-For Claude Code / OpenCode users: you can reuse whichever model API you're already paying for.
-
-### Model selection
-
-Default reranking model: `gemini-2.5-flash` with `thinkingBudget: 0` (no reasoning overhead, pure relevance judgment).
-
-> Keep the default reranking model (`gemini-2.5-flash`), or change it?
-
-If user wants to change:
-```bash
-export QMD_GEMINI_MODEL=their-model      # for Gemini provider
-export QMD_LLM_RERANK_MODEL=their-model  # for SiliconFlow/OpenAI LLM rerank
+QMD_RERANK_PROVIDER=openai
+QMD_RERANK_MODE=llm
 ```
 
 ---
@@ -443,6 +404,8 @@ After setup, add this to `AGENTS.md` in the project root:
 | `QMD_RERANK_DOC_LIMIT` | `40` | Max docs for reranking |
 | `QMD_RERANK_CHUNKS_PER_DOC` | `3` | Chunks per doc for reranking |
 | **Paths** | | |
+| `QMD_CONFIG_DIR` | `~/.config/qmd` | Config directory (index.yml + .env location) |
+| `XDG_CACHE_HOME` | `~/.cache` | Cache directory (database at `$XDG_CACHE_HOME/qmd/index.sqlite`) |
 | `QMD_SQLITE_VEC_PATH` | auto | sqlite-vec native extension path |
 
 **If you change the embedding model, run `qmd embed -f` to rebuild the vector index.**
