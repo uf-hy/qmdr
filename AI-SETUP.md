@@ -34,17 +34,33 @@ Config file: `~/.config/qmd/.env` (auto-loaded on startup). Collect all keys, wr
 mkdir -p ~/.config/qmd
 ```
 
+### 💰 Cost: practically free
+
+SiliconFlow gives **¥14 free credit** on signup — enough for **11,000+ queries** (Gemini rerank) or **2,300+ queries** (SiliconFlow-only). Daily cost at 100 queries/day: **¥0.12** (Gemini) or **¥0.59** (SiliconFlow LLM). The ¥14 free credit lasts **3–4 months** of normal use.
+
+| Component | Model | Price | Per Query |
+|-----------|-------|-------|-----------|
+| Embedding | Qwen3-Embedding-8B | ¥0.29/M tokens | ¥0.00006 |
+| Query Expansion | GLM-4.5-Air | ¥1.01 in / ¥6.19 out per M | ¥0.0012 |
+| Reranking (Gemini) | gemini-2.5-flash | **Free** (ai.google.dev) | ¥0 |
+| Reranking (SiliconFlow) | GLM-4.5-Air | same as above | ¥0.0047 |
+| **Total per query** | | | **¥0.0012** (Gemini) |
+| Indexing (one-time) | Qwen3-Embedding-8B | | ~¥0.17 per 3000 chunks |
+
+> Gemini reranking is recommended — it's free and produces better results. SiliconFlow-only setup works too if you can't access Google APIs.
+
 Region: China → default endpoint works. International → add `QMD_SILICONFLOW_BASE_URL=https://api.siliconflow.com/v1`.
 
 ```env
 # Required: SiliconFlow (embedding + query expansion). Register at cloud.siliconflow.cn (.com intl)
+# New users get ¥14 free credit (~11,000 queries with Gemini rerank)
 QMD_SILICONFLOW_API_KEY=sk-xxx
 
-# Recommended: Gemini reranking. Get key at ai.google.dev. China without proxy: skip, use fallback below
+# Recommended: Gemini reranking (free). Get key at ai.google.dev. China without proxy: skip, use fallback below
 QMD_GEMINI_API_KEY=xxx
 QMD_RERANK_PROVIDER=gemini
 
-# Alternative: SiliconFlow reranking (no extra key)
+# Alternative: SiliconFlow reranking (no extra key, uses free credit)
 # QMD_RERANK_PROVIDER=siliconflow
 # QMD_RERANK_MODE=llm
 
