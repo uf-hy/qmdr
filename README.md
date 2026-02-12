@@ -33,7 +33,6 @@ That's it. Your AI will handle the rest.
 - 🧠 Large-model reranking — trades a few API tokens for much sharper recall, so your context window stays clean
 - 📦 Source mode — Bun runs TypeScript natively, zero compilation
 - 🔧 20+ environment variables for full customization
-- 💰 Practically free — SiliconFlow gives ¥14 free credit on signup (~11,000 queries)
 
 ## Integrations
 
