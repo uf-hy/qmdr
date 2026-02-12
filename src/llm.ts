@@ -973,7 +973,7 @@ export class LlamaCpp implements LLM {
 }
 
 export type RemoteLLMConfig = {
-  rerankProvider: 'siliconflow' | 'gemini' | 'openai';
+  rerankProvider: 'siliconflow' | 'gemini' | 'openai' | 'dashscope';
   rerankMode?: 'llm' | 'rerank'; // 'llm' = chat model, 'rerank' = dedicated rerank API
   embedProvider?: 'siliconflow' | 'openai'; // remote embedding provider (optional)
   queryExpansionProvider?: 'siliconflow' | 'gemini' | 'openai'; // remote query expansion (optional)
@@ -994,6 +994,11 @@ export type RemoteLLMConfig = {
     baseUrl?: string; // default: https://api.openai.com/v1
     model?: string; // default: gpt-4o-mini (for rerank/query expansion)
     embedModel?: string; // default: text-embedding-3-small
+  };
+  dashscope?: {
+    apiKey: string;
+    baseUrl?: string; // default: https://dashscope.aliyuncs.com/compatible-api/v1
+    model?: string; // default: qwen3-rerank
   };
 };
 
@@ -1069,6 +1074,9 @@ export class RemoteLLM implements LLM {
         }
       }
       return this.rerankWithSiliconflow(query, documents, options);
+    }
+    if (this.config.rerankProvider === 'dashscope') {
+      return this.rerankWithDashscope(query, documents, options);
     }
     if (this.config.rerankProvider === 'openai') {
       return this.rerankWithOpenAI(query, documents, options);
@@ -1359,6 +1367,60 @@ export class RemoteLLM implements LLM {
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
       throw new Error(`SiliconFlow rerank failed (${resp.status}): ${body}`);
+    }
+
+    const data = await resp.json() as {
+      results?: Array<{ index: number; relevance_score: number }>;
+    };
+
+    const results: RerankDocumentResult[] = (data.results || [])
+      .map((item) => {
+        const doc = documents[item.index];
+        if (!doc) return null;
+        return {
+          file: doc.file,
+          score: item.relevance_score,
+          index: item.index,
+        };
+      })
+      .filter((item): item is RerankDocumentResult => item !== null);
+
+    return {
+      results,
+      model,
+    };
+  }
+
+  private async rerankWithDashscope(
+    query: string,
+    documents: RerankDocument[],
+    options: RerankOptions
+  ): Promise<RerankResult> {
+    const ds = this.config.dashscope;
+    if (!ds?.apiKey) {
+      throw new Error("RemoteLLM dashscope.apiKey is required when rerankProvider is 'dashscope'.");
+    }
+
+    const baseUrl = (ds.baseUrl || "https://dashscope.aliyuncs.com/compatible-api/v1").replace(/\/$/, "");
+    const model = options.model || ds.model || "qwen3-rerank";
+
+    const resp = await fetch(`${baseUrl}/reranks`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${ds.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        query,
+        documents: documents.map((d) => d.text),
+        top_n: Math.max(1, documents.length),
+      }),
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      throw new Error(`Dashscope rerank failed (${resp.status}): ${body}`);
     }
 
     const data = await resp.json() as {

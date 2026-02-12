@@ -33,6 +33,7 @@ That's it. Your AI will handle the rest.
 - 🧠 Large-model reranking — trades a few API tokens for much sharper recall, so your context window stays clean
 - 📦 Source mode — Bun runs TypeScript natively, zero compilation
 - 🔧 20+ environment variables for full customization
+- 💰 Free tier available — SiliconFlow free models (bge-m3 + Qwen2.5-7B) cost ¥0; premium models use ¥14 signup credit (~6 months)
 
 ## Integrations
 

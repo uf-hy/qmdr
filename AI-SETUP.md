@@ -34,27 +34,75 @@ Config file: `~/.config/qmd/.env` (auto-loaded on startup). Collect all keys, wr
 mkdir -p ~/.config/qmd
 ```
 
+### 💰 Cost
+
+SiliconFlow gives **¥14 free credit** on signup. Daily cost ~¥0.06 for typical use (indexing + querying). The free credit lasts **6+ months**.
+
+SiliconFlow also offers permanently free models (embedding, chat, reranking) — with these, the ¥14 credit is only used for premium models. See "Free tier" config below.
+
 Region: China → default endpoint works. International → add `QMD_SILICONFLOW_BASE_URL=https://api.siliconflow.com/v1`.
 
+**Default config** (best quality, uses ¥14 credit):
+
 ```env
-# Required: SiliconFlow (embedding + query expansion). Register at cloud.siliconflow.cn (.com intl)
+# Required: SiliconFlow. Register at cloud.siliconflow.cn (.com intl). ¥14 free credit on signup.
 QMD_SILICONFLOW_API_KEY=sk-xxx
 
-# Recommended: Gemini reranking. Get key at ai.google.dev. China without proxy: skip, use fallback below
+# Recommended: Gemini reranking (free). Get key at ai.google.dev
 QMD_GEMINI_API_KEY=xxx
 QMD_RERANK_PROVIDER=gemini
 
-# Alternative: SiliconFlow reranking (no extra key)
+# Alternative: SiliconFlow reranking (no extra key, uses ¥14 credit)
 # QMD_RERANK_PROVIDER=siliconflow
 # QMD_RERANK_MODE=llm
+```
 
+**Free tier config** (¥0 cost, SiliconFlow free models only, slightly lower quality):
+
+```env
+QMD_SILICONFLOW_API_KEY=sk-xxx
+QMD_SILICONFLOW_EMBED_MODEL=BAAI/bge-m3
+QMD_SILICONFLOW_QUERY_EXPANSION_MODEL=Qwen/Qwen2.5-7B-Instruct
+QMD_RERANK_PROVIDER=siliconflow
+QMD_RERANK_MODE=llm
+QMD_LLM_RERANK_MODEL=Qwen/Qwen2.5-7B-Instruct
+```
+
+> Free tier uses bge-m3 (1024d) instead of Qwen3-Embedding-8B (4096d), and Qwen2.5-7B for query expansion/reranking instead of GLM-4.5-Air. Chinese retrieval quality is slightly lower but still good. Switching models requires `qmd embed -f` to rebuild vectors.
+
+```env
 # Optional: custom OpenAI-compatible endpoint
 # QMD_OPENAI_API_KEY=xxx
 # QMD_OPENAI_BASE_URL=https://custom-endpoint.com/v1
 # QMD_EMBED_PROVIDER=openai
 ```
 
-Provider auto-routing: siliconflow → gemini → openai (first with configured key).
+**Alibaba Bailian (百炼) reranking** (native qwen3-rerank, fastest):
+
+```env
+QMD_DASHSCOPE_API_KEY=sk-xxx
+QMD_RERANK_PROVIDER=dashscope
+QMD_RERANK_MODE=rerank
+# QMD_DASHSCOPE_RERANK_MODEL=qwen3-rerank  # default
+```
+
+> Bailian's qwen3-rerank uses a dedicated rerank API (`/compatible-api/v1/reranks`), not the OpenAI-compatible chat endpoint. QMDR handles this automatically when `QMD_RERANK_PROVIDER=dashscope`. Combine with SiliconFlow for embedding + query expansion.
+
+### Reranking: two modes
+
+QMDR supports two reranking strategies:
+
+- `QMD_RERANK_MODE=rerank` — Dedicated reranker model (e.g. bge-reranker, qwen3-rerank). Fast (~300ms), returns relevance scores directly. Best quality.
+- `QMD_RERANK_MODE=llm` (default) — Uses a chat model to extract and rank relevant content. Slower (~1-3s) but works with any OpenAI-compatible API. Also extracts key passages.
+
+For LLM rerank, use a lightweight/cheap model — it only needs to read ~20 short chunks and pick the relevant ones. Recommended models:
+
+- SiliconFlow → `zai-org/GLM-4.5-Air` (default, ¥1/M in)
+- SiliconFlow free → `Qwen/Qwen2.5-7B-Instruct` (free, unlimited)
+
+After configuring, run `qmd doctor --bench` to verify rerank latency. Target: <500ms for dedicated reranker, <3s for LLM rerank.
+
+Provider auto-routing: siliconflow → gemini → dashscope → openai (first with configured key).
 QMDR requires cloud APIs — there are no local/fallback models. Unconfigured providers will show ❌ in `qmd doctor`.
 
 ## 3. Verify
@@ -133,10 +181,11 @@ QMD_GEMINI_API_KEY	—	Recommended (reranking)
 QMD_OPENAI_API_KEY	—	Optional (custom endpoint)
 QMD_EMBED_PROVIDER	auto	siliconflow / openai
 QMD_QUERY_EXPANSION_PROVIDER	auto	siliconflow / gemini / openai
-QMD_RERANK_PROVIDER	auto	siliconflow / gemini / openai
+QMD_RERANK_PROVIDER	auto	siliconflow / gemini / openai / dashscope
 QMD_RERANK_MODE	llm	llm / rerank (dedicated API)
 QMD_SILICONFLOW_BASE_URL	https://api.siliconflow.cn/v1	International: .com
 QMD_GEMINI_BASE_URL	Google default	Custom endpoint / proxy (China users)
+QMD_DASHSCOPE_API_KEY	—	Alibaba Bailian (rerank only)
 
 Model/tuning overrides (change only if needed):
 
@@ -146,6 +195,7 @@ QMD_SILICONFLOW_QUERY_EXPANSION_MODEL	zai-org/GLM-4.5-Air
 QMD_GEMINI_MODEL	gemini-2.5-flash (thinkingBudget=0)
 QMD_LLM_RERANK_MODEL	zai-org/GLM-4.5-Air
 QMD_SILICONFLOW_RERANK_MODEL	BAAI/bge-reranker-v2-m3
+QMD_DASHSCOPE_RERANK_MODEL	qwen3-rerank
 QMD_CHUNK_SIZE_TOKENS	200
 QMD_CHUNK_OVERLAP_TOKENS	40
 QMD_SQLITE_VEC_PATH	auto

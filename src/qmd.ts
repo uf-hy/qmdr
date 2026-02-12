@@ -271,28 +271,35 @@ function getRemoteLLM(): RemoteLLM | null {
   if (remoteLLM) return remoteLLM;
 
   // Check env vars for remote config
-  const rerankProvider = process.env.QMD_RERANK_PROVIDER as 'siliconflow' | 'gemini' | 'openai' | undefined;
+  const rerankProvider = process.env.QMD_RERANK_PROVIDER as 'siliconflow' | 'gemini' | 'openai' | 'dashscope' | undefined;
   const embedProvider = process.env.QMD_EMBED_PROVIDER as 'siliconflow' | 'openai' | undefined;
   const queryExpansionProvider = process.env.QMD_QUERY_EXPANSION_PROVIDER as 'siliconflow' | 'gemini' | 'openai' | undefined;
   const rerankMode = (process.env.QMD_RERANK_MODE as 'llm' | 'rerank' | undefined) || 'llm';
   const sfApiKey = process.env.QMD_SILICONFLOW_API_KEY;
   const gmApiKey = process.env.QMD_GEMINI_API_KEY;
   const oaApiKey = process.env.QMD_OPENAI_API_KEY;
+  const dsApiKey = process.env.QMD_DASHSCOPE_API_KEY;
   const sfLlmRerankModel = process.env.QMD_SILICONFLOW_LLM_RERANK_MODEL || process.env.QMD_LLM_RERANK_MODEL || 'zai-org/GLM-4.5-Air';
 
-  let effectiveRerankProvider: 'siliconflow' | 'gemini' | 'openai' | undefined;
+  let effectiveRerankProvider: 'siliconflow' | 'gemini' | 'openai' | 'dashscope' | undefined;
   if (rerankMode === 'rerank') {
-    if (sfApiKey) {
+    if (rerankProvider === 'dashscope' && dsApiKey) {
+      effectiveRerankProvider = 'dashscope';
+    } else if (sfApiKey) {
       effectiveRerankProvider = 'siliconflow';
     } else if (rerankProvider === 'gemini' && gmApiKey) {
       effectiveRerankProvider = 'gemini';
     } else if (rerankProvider === 'openai' && oaApiKey) {
       effectiveRerankProvider = 'openai';
+    } else if (dsApiKey) {
+      effectiveRerankProvider = 'dashscope';
     } else {
       effectiveRerankProvider = gmApiKey ? 'gemini' : (oaApiKey ? 'openai' : undefined);
     }
   } else {
-    if (rerankProvider === 'gemini' || rerankProvider === 'openai') {
+    if (rerankProvider === 'dashscope' && dsApiKey) {
+      effectiveRerankProvider = 'dashscope';
+    } else if (rerankProvider === 'gemini' || rerankProvider === 'openai') {
       effectiveRerankProvider = rerankProvider;
     } else if (rerankProvider === 'siliconflow') {
       // LLM rerank via SiliconFlow's OpenAI-compatible API
@@ -342,6 +349,15 @@ function getRemoteLLM(): RemoteLLM | null {
       baseUrl: process.env.QMD_OPENAI_BASE_URL || process.env.QMD_SILICONFLOW_BASE_URL,
       model: process.env.QMD_OPENAI_MODEL || (sfApiKey ? sfLlmRerankModel : undefined),
       embedModel: process.env.QMD_OPENAI_EMBED_MODEL,
+    };
+  }
+
+  // Dashscope config (Alibaba Bailian — rerank only)
+  if (dsApiKey || effectiveRerankProvider === 'dashscope') {
+    config.dashscope = {
+      apiKey: dsApiKey || '',
+      baseUrl: process.env.QMD_DASHSCOPE_BASE_URL,
+      model: process.env.QMD_DASHSCOPE_RERANK_MODEL,
     };
   }
 
@@ -2930,23 +2946,30 @@ async function doctorCommand(bench = false): Promise<void> {
   const sfKeyRuntime = runtime.QMD_SILICONFLOW_API_KEY;
   const gmKeyRuntime = runtime.QMD_GEMINI_API_KEY;
   const oaKeyRuntime = runtime.QMD_OPENAI_API_KEY;
+  const dsKeyRuntime = runtime.QMD_DASHSCOPE_API_KEY;
   const rerankMode = (runtime.QMD_RERANK_MODE as "llm" | "rerank" | undefined) || "llm";
   const sfLlmRerankModel = runtime.QMD_SILICONFLOW_LLM_RERANK_MODEL || runtime.QMD_LLM_RERANK_MODEL || "zai-org/GLM-4.5-Air";
 
-  const configuredRerankProvider = runtime.QMD_RERANK_PROVIDER as "siliconflow" | "gemini" | "openai" | undefined;
-  let rerankProvider: "siliconflow" | "gemini" | "openai" | undefined;
+  const configuredRerankProvider = runtime.QMD_RERANK_PROVIDER as "siliconflow" | "gemini" | "openai" | "dashscope" | undefined;
+  let rerankProvider: "siliconflow" | "gemini" | "openai" | "dashscope" | undefined;
   if (rerankMode === "rerank") {
-    if (sfKeyRuntime) {
+    if (configuredRerankProvider === "dashscope" && dsKeyRuntime) {
+      rerankProvider = "dashscope";
+    } else if (sfKeyRuntime) {
       rerankProvider = "siliconflow";
     } else if (configuredRerankProvider === "gemini" && gmKeyRuntime) {
       rerankProvider = "gemini";
     } else if (configuredRerankProvider === "openai" && oaKeyRuntime) {
       rerankProvider = "openai";
+    } else if (dsKeyRuntime) {
+      rerankProvider = "dashscope";
     } else {
       rerankProvider = gmKeyRuntime ? "gemini" : (oaKeyRuntime ? "openai" : undefined);
     }
   } else {
-    if (configuredRerankProvider === "gemini" || configuredRerankProvider === "openai") {
+    if (configuredRerankProvider === "dashscope" && dsKeyRuntime) {
+      rerankProvider = "dashscope";
+    } else if (configuredRerankProvider === "gemini" || configuredRerankProvider === "openai") {
       rerankProvider = configuredRerankProvider;
     } else if (configuredRerankProvider === "siliconflow") {
       rerankProvider = sfKeyRuntime ? "openai" : undefined;
@@ -2965,6 +2988,7 @@ async function doctorCommand(bench = false): Promise<void> {
   const effectiveSfRerankModel = runtime.QMD_SILICONFLOW_RERANK_MODEL || runtime.QMD_SILICONFLOW_MODEL || "BAAI/bge-reranker-v2-m3";
   const effectiveGmModel = runtime.QMD_GEMINI_RERANK_MODEL || runtime.QMD_GEMINI_MODEL || "gemini-2.5-flash";
   const effectiveOaModel = runtime.QMD_OPENAI_MODEL || (sfKeyRuntime ? sfLlmRerankModel : "gpt-4o-mini");
+  const effectiveDsRerankModel = runtime.QMD_DASHSCOPE_RERANK_MODEL || "qwen3-rerank";
   const effectiveQueryExpansionModel = queryExpansionProvider === "siliconflow"
     ? (runtime.QMD_SILICONFLOW_QUERY_EXPANSION_MODEL || "zai-org/GLM-4.5-Air")
     : (queryExpansionProvider === "openai" ? effectiveOaModel : effectiveGmModel);
@@ -2996,10 +3020,14 @@ async function doctorCommand(bench = false): Promise<void> {
   console.log(`  QMD_SILICONFLOW_API_KEY: ${sfKeyRuntime ? "<已设置>" : "<未设置>"}`);
   console.log(`  QMD_GEMINI_API_KEY: ${gmKeyRuntime ? "<已设置>" : "<未设置>"}`);
   console.log(`  QMD_OPENAI_API_KEY: ${oaKeyRuntime ? "<已设置>" : "<未设置>"}`);
+  console.log(`  QMD_DASHSCOPE_API_KEY: ${dsKeyRuntime ? "<已设置>" : "<未设置>"}`);
   console.log(`  QMD_EMBED_PROVIDER: ${runtime.QMD_EMBED_PROVIDER || "<未设置>"}`);
   console.log(`  QMD_QUERY_EXPANSION_PROVIDER: ${runtime.QMD_QUERY_EXPANSION_PROVIDER || "<未设置>"}`);
   console.log(`  QMD_RERANK_PROVIDER: ${runtime.QMD_RERANK_PROVIDER || "<未设置>"}`);
   console.log(`  QMD_RERANK_MODE: ${runtime.QMD_RERANK_MODE || "<未设置，默认llm>"}`);
+  if (dsKeyRuntime) {
+    console.log(`  QMD_DASHSCOPE_RERANK_MODEL: ${runtime.QMD_DASHSCOPE_RERANK_MODEL || "<未设置，默认qwen3-rerank>"}`);
+  }
   if (sfKeyRuntime) {
     console.log(`  QMD_SILICONFLOW_EMBED_MODEL: ${runtime.QMD_SILICONFLOW_EMBED_MODEL || "<未设置>"}`);
     console.log(`  QMD_SILICONFLOW_QUERY_EXPANSION_MODEL: ${runtime.QMD_SILICONFLOW_QUERY_EXPANSION_MODEL || "<未设置>"}`);
@@ -3031,6 +3059,8 @@ async function doctorCommand(bench = false): Promise<void> {
       "QMD_SILICONFLOW_API_KEY",
       "QMD_GEMINI_API_KEY",
       "QMD_OPENAI_API_KEY",
+      "QMD_DASHSCOPE_API_KEY",
+      "QMD_DASHSCOPE_RERANK_MODEL",
     ];
     for (const key of keysToShow) {
       const value = launchdEnv[key];
@@ -3047,6 +3077,7 @@ async function doctorCommand(bench = false): Promise<void> {
   const rerankModel = rerankProvider === "siliconflow" ? effectiveSfRerankModel
     : rerankProvider === "gemini" ? effectiveGmModel
     : rerankProvider === "openai" ? effectiveOaModel
+    : rerankProvider === "dashscope" ? effectiveDsRerankModel
     : "本地 qwen3-reranker";
   console.log(`  重排序模式: ${rerankMode}`);
   console.log(`  重排序 (rerank): ${rerankProvider || "本地"} → ${rerankModel}`);
