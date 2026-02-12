@@ -96,3 +96,14 @@ jobs:
             echo "Search failed with exit code $query_status_3"
             exit 1
           fi
+
+          # Test: FTS5 trigger handles file deletion (deactivate) correctly
+          echo "--- Testing file deletion (deactivate) ---"
+          rm "$TEST_DOCS_DIR/travel-japan.md"
+          bun src/qmd.ts update
+          update_status=$?
+          if [ "$update_status" -ne 0 ]; then
+            echo "Update after file deletion failed with exit code $update_status"
+            exit 1
+          fi
+          echo "File deletion test passed"
