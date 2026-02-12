@@ -28,6 +28,7 @@ Recommended settings for this repo:
    - Require approvals (at least 1)
    - Require status checks to pass before merging
 3. Required checks:
+   - `Typecheck`
    - `Quality (typecheck + unit tests)`
    - `Integration (SiliconFlow smoke)` *(optional if you want hard API gate on every PR)*
 
@@ -62,5 +63,7 @@ Workflow guarantees:
 ## 5) Operational notes
 
 - CI runs on `pull_request`, `push main`, and `workflow_dispatch`.
+- Nightly full regression runs on schedule (`.github/workflows/nightly.yml`) and can be triggered manually.
 - Integration smoke job is conditional on `QMD_SILICONFLOW_API_KEY`.
+- Integration and nightly jobs upload logs as workflow artifacts for faster debugging.
 - If npm trusted publishing is not configured and `NPM_TOKEN` is missing, release workflow will fail at npm publish.
