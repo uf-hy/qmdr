@@ -68,7 +68,6 @@ jobs:
     needs:
       - typecheck
       - quality
-    if: ${{ secrets.QMD_SILICONFLOW_API_KEY != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
@@ -81,26 +80,42 @@ jobs:
       XDG_CACHE_HOME: /tmp/qmdr-ci-cache
 
     steps:
+      - name: Check integration prerequisites
+        id: precheck
+        shell: bash
+        run: |
+          if [ -z "${QMD_SILICONFLOW_API_KEY}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "QMD_SILICONFLOW_API_KEY is empty; skipping integration smoke test."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout repository
+        if: steps.precheck.outputs.skip != 'true'
         uses: actions/checkout@v4
 
       - name: Setup Bun
+        if: steps.precheck.outputs.skip != 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.6
 
       - name: Install system dependencies
+        if: steps.precheck.outputs.skip != 'true'
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
 
       - name: Install dependencies
+        if: steps.precheck.outputs.skip != 'true'
         run: bun install --frozen-lockfile
 
       - name: Run qmd integration smoke flow
+        if: steps.precheck.outputs.skip != 'true'
         shell: bash
         run: bash scripts/ci/integration-smoke.sh
 
       - name: Upload integration logs on failure
-        if: failure()
+        if: failure() && steps.precheck.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: qmdr-integration-logs
