@@ -73,6 +73,11 @@ qmd doctor
 
 Requires: [Bun](https://bun.sh) 1.3.0–1.3.6 (1.3.7+ has [sqlite-vec segfault](https://github.com/oven-sh/bun/issues/26572)) · macOS: `brew install sqlite`
 
+## CI/CD
+
+- Baseline snapshot: [docs/ci-cd-baseline.md](docs/ci-cd-baseline.md)
+- Setup guide (secrets, branch protection, npm trusted publishing): [docs/ci-cd-setup.md](docs/ci-cd-setup.md)
+
 ## Credits
 
 Based on [QMD](https://github.com/tobi/qmd) by Tobias Lütke. [MIT License](LICENSE).
