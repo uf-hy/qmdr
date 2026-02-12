@@ -13,6 +13,7 @@
       },
       "devDependencies": {
         "@types/bun": "latest",
+        "typescript": "^5.9.3",
       },
       "optionalDependencies": {
         "sqlite-vec-darwin-arm64": "^0.1.7-alpha.2",
@@ -25,6 +26,9 @@
       },
     },
   },
+  "trustedDependencies": [
+    "node-llama-cpp",
+  ],
   "packages": {
     "@hono/node-server": ["@hono/node-server@1.19.7", "", { "peerDependencies": { "hono": "^4" } }, "sha512-vUcD0uauS7EU2caukW8z5lJKtoGMokxNbJtBiwHgpqxEXokaHCBkQUmCHhjFB1VUTWdqj25QoMkMKzgjq+uhrw=="],
 
