@@ -9,8 +9,12 @@
   "scripts": {
     "test": "bun test",
     "test:ci": "bun test src/store-paths.test.ts src/cli.test.ts",
+    "test:heavy": "bun test src/store.test.ts src/llm.test.ts src/mcp.test.ts src/eval.test.ts",
+    "test:full": "bun test",
     "typecheck": "tsc --noEmit",
+    "ci:quality": "bun run typecheck && bun run test:ci",
     "ci:integration": "bash scripts/ci/integration-smoke.sh",
+    "ci:nightly": "bash scripts/ci/nightly-full.sh",
     "qmd": "bun src/qmd.ts",
     "index": "bun src/qmd.ts index",
     "vector": "bun src/qmd.ts vector",

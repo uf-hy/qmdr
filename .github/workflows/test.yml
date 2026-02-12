@@ -17,9 +17,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
-    name: Quality (typecheck + unit tests)
+  typecheck:
+    name: Typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -39,14 +40,37 @@ jobs:
       - name: Type check
         run: bun run typecheck
 
+  quality:
+    name: Quality (typecheck + unit tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
       - name: Run unit tests
         run: bun run test:ci
 
   integration:
     name: Integration (SiliconFlow smoke)
-    needs: quality
+    needs:
+      - typecheck
+      - quality
     if: ${{ secrets.QMD_SILICONFLOW_API_KEY != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) }}
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     env:
       QMD_SILICONFLOW_API_KEY: ${{ secrets.QMD_SILICONFLOW_API_KEY }}
       QMD_EMBED_PROVIDER: siliconflow
@@ -74,3 +98,10 @@ jobs:
       - name: Run qmd integration smoke flow
         shell: bash
         run: bash scripts/ci/integration-smoke.sh
+
+      - name: Upload integration logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qmdr-integration-logs
+          path: /tmp/qmdr-ci-logs
