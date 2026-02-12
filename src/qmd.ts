@@ -2079,8 +2079,9 @@ function outputResults(results: { file: string; displayPath: string; title: stri
     // Check against all existing entries for similarity
     let mergedIdx = -1;
     for (let i = 0; i < normBodies.length; i++) {
-      if (normBodies[i].length < 10) continue;
-      if (textSimilarity(normBody, normBodies[i]) >= DEDUP_THRESHOLD) {
+      const existingNormBody = normBodies[i];
+      if (!existingNormBody || existingNormBody.length < 10) continue;
+      if (textSimilarity(normBody, existingNormBody) >= DEDUP_THRESHOLD) {
         mergedIdx = i;
         break;
       }

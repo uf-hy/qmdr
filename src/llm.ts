@@ -730,13 +730,13 @@ export class LlamaCpp implements LLM {
       const context = await this.ensureEmbedContext();
 
       // node-llama-cpp handles batching internally when we make parallel requests
-      const embeddings = await Promise.all(
+      const embeddings: (EmbeddingResult | null)[] = await Promise.all(
         texts.map(async (text) => {
           try {
             const embedding = await context.getEmbeddingFor(text);
             this.touchActivity();  // Keep-alive during slow batches
             return {
-              embedding: Array.from(embedding.vector),
+              embedding: Array.from(embedding.vector, (value) => Number(value)),
               model: this.embedModelUri,
             };
           } catch (err) {
@@ -777,7 +777,7 @@ export class LlamaCpp implements LLM {
         temperature,
         topK: 20,
         topP: 0.8,
-        onTextChunk: (text) => {
+        onTextChunk: (text: string) => {
           result += text;
         },
       });
@@ -842,7 +842,7 @@ export class LlamaCpp implements LLM {
       // Qwen3 recommended settings for non-thinking mode:
       // temp=0.7, topP=0.8, topK=20, presence_penalty for repetition
       // DO NOT use greedy decoding (temp=0) - causes infinite loops
-      const result = await session.prompt(prompt, {
+      const result: string = await session.prompt(prompt, {
         grammar,
         maxTokens: 600,
         temperature: 0.7,
@@ -854,7 +854,7 @@ export class LlamaCpp implements LLM {
         },
       });
 
-      const lines = result.trim().split("\n");
+      const lines: string[] = result.trim().split("\n");
       const queryLower = query.toLowerCase();
       const queryTerms = queryLower.replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
 
@@ -864,7 +864,7 @@ export class LlamaCpp implements LLM {
         return queryTerms.some(term => lower.includes(term));
       };
 
-      const queryables: Queryable[] = lines.map(line => {
+      const queryables: Queryable[] = lines.map((line: string) => {
         const colonIdx = line.indexOf(":");
         if (colonIdx === -1) return null;
         const type = line.slice(0, colonIdx).trim();
@@ -872,7 +872,7 @@ export class LlamaCpp implements LLM {
         const text = line.slice(colonIdx + 1).trim();
         if (!hasQueryTerm(text)) return null;
         return { type: type as QueryType, text };
-      }).filter((q): q is Queryable => q !== null);
+      }).filter((q: Queryable | null): q is Queryable => q !== null);
 
       // Filter out lex entries if not requested
       const filtered = includeLexical ? queryables : queryables.filter(q => q.type !== 'lex');
@@ -915,10 +915,11 @@ export class LlamaCpp implements LLM {
     const texts = documents.map((doc) => doc.text);
 
     // Use the proper ranking API - returns [{document: string, score: number}] sorted by score
-    const ranked = await context.rankAndSort(query, texts);
+    type RankedItem = { document: string; score: number };
+    const ranked = await context.rankAndSort(query, texts) as RankedItem[];
 
     // Map back to our result format using the text-to-doc map
-    const results: RerankDocumentResult[] = ranked.map((item) => {
+    const results: RerankDocumentResult[] = ranked.map((item: RankedItem) => {
       const docInfo = textToDoc.get(item.document)!;
       return {
         file: docInfo.file,
