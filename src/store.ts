@@ -613,7 +613,20 @@ function initializeDatabase(db: Database): void {
   const hasSeqColumn = cvInfo.some(col => col.name === 'seq');
   if (cvInfo.length > 0 && !hasSeqColumn) {
     db.exec(`DROP TABLE IF EXISTS content_vectors`);
-    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+    if (isSQLiteExtensionLoadingAllowed()) {
+      try {
+        db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+      } catch (err) {
+        if (looksLikeSqliteVecModuleMissingError(err)) {
+          console.warn(
+            "Warning: unable to drop vectors_vec because the sqlite-vec (vec0) module is unavailable. " +
+            "Set QMD_ALLOW_SQLITE_EXTENSIONS=1 (and ensure sqlite-vec is installed) to manage the vector index."
+          );
+        } else {
+          throw err;
+        }
+      }
+    }
   }
   db.exec(`
     CREATE TABLE IF NOT EXISTS content_vectors (
