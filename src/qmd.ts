@@ -409,8 +409,8 @@ async function rerank(query: string, documents: { file: string; text: string }[]
     ? await session.rerank(query, rerankDocs)
     : await getDefaultLlamaCpp().rerank(query, rerankDocs);
 
-  progress.clear();
-  process.stderr.write("\n");
+  if (!_quietMode) progress.clear();
+  if (!_quietMode) process.stderr.write("\n");
 
   return result.results.map((r) => ({ file: r.file, score: r.score }));
 }
@@ -2420,6 +2420,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
   const db = getDb();
   const _profile = opts.profile;
   const _verbose = opts.verbose || opts.profile;
+  const prevQuietMode = _quietMode;
   _quietMode = !_verbose;
   const _timings: { step: string; ms: number; detail?: string }[] = [];
   const _t0 = Date.now();
@@ -2459,8 +2460,8 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
 
     if (hasStrongSignal) {
       // Strong BM25 signal - skip expensive LLM expansion
-      process.stderr.write(`${c.dim}Strong BM25 signal (${topScore.toFixed(2)}) - skipping expansion${c.reset}\n`);
-      {
+      if (_verbose) {
+        process.stderr.write(`${c.dim}Strong BM25 signal (${topScore.toFixed(2)}) - skipping expansion${c.reset}\n`);
         const lines: string[] = [];
         lines.push(`${c.dim}├─ ${query} · (lexical+vector)${c.reset}`);
         lines[lines.length - 1] = lines[lines.length - 1]!.replace('├─', '└─');
@@ -2729,8 +2730,8 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
       for (let i = 0; i < Math.min(6, finalResults.length); i++) {
         console.log(`  ${i}: score=${finalResults[i]!.score.toFixed(4)} ${finalResults[i]!.displayPath}`);
       }
+      console.log("");
     }
-    console.log("");
 
     // File-level dedup DISABLED — allow multiple chunks from same file to surface
     // const seenFiles = new Set<string>();
@@ -2755,9 +2756,13 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     outputResults(finalResults, query, opts);
   };
 
+  try {
   await llmService.withSession(async (session) => {
     await runQuerySearch(session);
   }, { maxDuration: 10 * 60 * 1000, name: 'querySearch' });
+  } finally {
+    _quietMode = prevQuietMode;
+  }
 }
 
 // Parse CLI arguments using util.parseArgs
