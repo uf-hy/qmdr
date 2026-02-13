@@ -7,6 +7,7 @@ texts/
 *.md
 !README.md
 !AI-SETUP.md
+!CHANGELOG.md
 !skills/**/*.md
 !finetune/*.md
 !docs/*.md
