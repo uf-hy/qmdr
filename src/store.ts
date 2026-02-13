@@ -416,7 +416,7 @@ function isSQLiteExtensionLoadingAllowed(): boolean {
   return Bun.env.QMD_ALLOW_SQLITE_EXTENSIONS === "1";
 }
 
-let _sqliteVecLoaded = false;
+const _sqliteVecLoadedDbs = new WeakSet<Database>();
 
 function looksLikeSqliteVecNotFoundError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -507,12 +507,12 @@ function resolveSqliteVecFallbackPaths(): string[] {
 }
 
 function loadSqliteVecExtension(db: Database): void {
-  if (_sqliteVecLoaded) return;
+  if (_sqliteVecLoadedDbs.has(db)) return;
   if (!isSQLiteExtensionLoadingAllowed()) return;
 
   try {
     sqliteVec.load(db);
-    _sqliteVecLoaded = true;
+    _sqliteVecLoadedDbs.add(db);
     return;
   } catch (err) {
     // Fallback for compiled binary: import.meta.url resolves to /$bunfs/root/
@@ -523,7 +523,7 @@ function loadSqliteVecExtension(db: Database): void {
         try {
           if (!existsSync(p)) continue;
           db.loadExtension(p.replace(/\.(dylib|so|dll)$/i, ""));
-          _sqliteVecLoaded = true;
+          _sqliteVecLoadedDbs.add(db);
           return;
         } catch { /* try next */ }
       }
@@ -671,7 +671,7 @@ function ensureVecTableInternal(db: Database, dimensions: number): void {
   }
 
   // Lazy-load sqlite-vec for callers that only need FTS/metadata.
-  if (!_sqliteVecLoaded) {
+  if (!_sqliteVecLoadedDbs.has(db)) {
     loadSqliteVecExtension(db);
   }
 
@@ -1108,6 +1108,12 @@ export function cleanupOrphanedContent(db: Database): number {
  * Returns the number of orphaned embedding chunks deleted.
  */
 export function cleanupOrphanedVectors(db: Database): number {
+  // If extensions are disabled for this run, treat vector features as unavailable.
+  // A pre-existing vectors_vec table can't be safely queried/modified without vec0.
+  if (!isSQLiteExtensionLoadingAllowed()) {
+    return 0;
+  }
+
   // Check if vectors_vec table exists
   const tableExists = db.prepare(`
     SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'
@@ -1115,6 +1121,10 @@ export function cleanupOrphanedVectors(db: Database): number {
 
   if (!tableExists) {
     return 0;
+  }
+
+  if (!_sqliteVecLoadedDbs.has(db)) {
+    loadSqliteVecExtension(db);
   }
 
   // Count orphaned vectors first
@@ -2143,8 +2153,15 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
 // =============================================================================
 
 export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string, session?: ILLMSession): Promise<SearchResult[]> {
+  // Graceful degradation: if extensions are disabled, vector search is unavailable.
+  if (!isSQLiteExtensionLoadingAllowed()) return [];
+
   const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
   if (!tableExists) return [];
+
+  if (!_sqliteVecLoadedDbs.has(db)) {
+    loadSqliteVecExtension(db);
+  }
 
   const embedding = await getEmbedding(query, model, true, session);
   if (!embedding) return [];
@@ -2800,7 +2817,7 @@ export function getStatus(db: Database): IndexStatus {
 
   const totalDocs = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE active = 1`).get() as { c: number }).c;
   const needsEmbedding = getHashesNeedingEmbedding(db);
-  const hasVectors = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  const hasVectors = isSQLiteExtensionLoadingAllowed() && !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
 
   return {
     totalDocuments: totalDocs,

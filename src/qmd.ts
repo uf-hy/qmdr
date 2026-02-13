@@ -1528,7 +1528,31 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   const collectionRootPrefix = collectionRoot.endsWith("/") ? collectionRoot : collectionRoot + "/";
   const now = new Date().toISOString();
   const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
-  const maxIndexBytes = parseInt(process.env.QMD_MAX_INDEX_FILE_BYTES || String(8 * 1024 * 1024), 10);
+
+  const defaultMaxIndexBytes = 8 * 1024 * 1024;
+  const maxIndexBytesEnv = process.env.QMD_MAX_INDEX_FILE_BYTES;
+  let maxIndexBytes = Number.parseInt(maxIndexBytesEnv ?? "", 10);
+  if (!Number.isFinite(maxIndexBytes) || maxIndexBytes <= 0) {
+    maxIndexBytes = defaultMaxIndexBytes;
+  }
+
+  // macOS and Windows are typically case-insensitive; avoid false negatives when
+  // realpath casing differs from the collection root.
+  function shouldFoldPathCaseForRoot(root: string): boolean {
+    if (process.platform === "win32") return true;
+    if (process.platform !== "darwin") return false;
+
+    const idx = root.search(/[A-Za-z]/);
+    if (idx < 0) return false;
+
+    const ch = root[idx] as string;
+    const flipped = root.slice(0, idx) + (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()) + root.slice(idx + 1);
+    return getRealPath(flipped).replace(/\\/g, "/") === root;
+  }
+
+  const foldPathCase = shouldFoldPathCaseForRoot(collectionRoot);
+  const collectionRootCmp = foldPathCase ? collectionRoot.toLowerCase() : collectionRoot;
+  const collectionRootPrefixCmp = foldPathCase ? collectionRootPrefix.toLowerCase() : collectionRootPrefix;
 
   // Clear Ollama cache on index
   clearCache(db);
@@ -1575,7 +1599,8 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
 
   for (const relativeFile of files) {
     const filepath = getRealPath(resolve(resolvedPwd, relativeFile)).replace(/\\/g, "/");
-    if (!(filepath === collectionRoot || filepath.startsWith(collectionRootPrefix))) {
+    const filepathCmp = foldPathCase ? filepath.toLowerCase() : filepath;
+    if (!(filepathCmp === collectionRootCmp || filepathCmp.startsWith(collectionRootPrefixCmp))) {
       skippedSymlinkEscapes++;
       processed++;
       progress.set((processed / total) * 100);
