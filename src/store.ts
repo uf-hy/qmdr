@@ -1524,14 +1524,19 @@ export function findDocumentByDocid(db: Database, docid: string): { filepath: st
   if (shortHash.length < 1) return null;
 
   // Look up documents where hash starts with the short hash
-  const doc = db.prepare(`
+  const matches = db.prepare(`
     SELECT 'qmd://' || d.collection || '/' || d.path as filepath, d.hash
     FROM documents d
     WHERE d.hash LIKE ? AND d.active = 1
-    LIMIT 1
-  `).get(`${shortHash}%`) as { filepath: string; hash: string } | null;
+    LIMIT 2
+  `).all(`${shortHash}%`) as { filepath: string; hash: string }[];
 
-  return doc;
+  if (matches.length > 1) {
+    console.error(`Docid collision for "${shortHash}". Provide a longer prefix.`);
+    return null;
+  }
+
+  return matches[0] || null;
 }
 
 export function findSimilarFiles(db: Database, query: string, maxDistance: number = 3, limit: number = 5): string[] {
@@ -1801,11 +1806,11 @@ export function renameCollection(db: Database, oldName: string, newName: string)
 /**
  * Insert or update a context for a specific collection and path prefix.
  */
-export function insertContext(db: Database, collectionId: number, pathPrefix: string, context: string): void {
-  // Get collection name from ID
-  const coll = db.prepare(`SELECT name FROM collections WHERE id = ?`).get(collectionId) as { name: string } | null;
+export function insertContext(db: Database, collectionId: number | string, pathPrefix: string, context: string): void {
+  const collectionName = typeof collectionId === "string" ? collectionId : String(collectionId);
+  const coll = getCollection(collectionName);
   if (!coll) {
-    throw new Error(`Collection with id ${collectionId} not found`);
+    throw new Error(`Collection "${collectionName}" not found`);
   }
 
   // Use collections.ts to add context

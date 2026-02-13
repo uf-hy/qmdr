@@ -533,7 +533,7 @@ function showStatus(): void {
   closeDb();
 }
 
-async function updateCollections(): Promise<void> {
+async function updateCollections(allowRun: boolean): Promise<void> {
   const db = getDb();
   // Collections are defined in YAML; no duplicate cleanup needed.
 
@@ -559,6 +559,12 @@ async function updateCollections(): Promise<void> {
     // Execute custom update command if specified in YAML
     const yamlCol = getCollectionFromYaml(col.name);
     if (yamlCol?.update) {
+      if (!allowRun) {
+        console.log(`${c.dim}    Skipping update command (use --allow-run to enable): ${yamlCol.update}${c.reset}`);
+        await indexFiles(col.pwd, col.glob_pattern, col.name, true);
+        console.log("");
+        continue;
+      }
       console.log(`${c.dim}    Running update command: ${yamlCol.update}${c.reset}`);
       try {
         const proc = Bun.spawn(["/usr/bin/env", "bash", "-c", yamlCol.update], {
@@ -1557,11 +1563,28 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
 
   let indexed = 0, updated = 0, unchanged = 0, processed = 0;
   const seenPaths = new Set<string>();
+  const normalizedPathMap = new Map<string, string>();
   const startTime = Date.now();
 
   for (const relativeFile of files) {
     const filepath = getRealPath(resolve(resolvedPwd, relativeFile));
-    const path = handelize(relativeFile); // Normalize path for token-friendliness
+    const normalizedPath = handelize(relativeFile); // Normalize path for token-friendliness
+    const existingOriginal = normalizedPathMap.get(normalizedPath);
+    let path = normalizedPath;
+    if (existingOriginal && existingOriginal !== relativeFile) {
+      path = relativeFile;
+      if (seenPaths.has(path)) {
+        let counter = 2;
+        let candidate = `${path}~${counter}`;
+        while (seenPaths.has(candidate)) {
+          counter++;
+          candidate = `${path}~${counter}`;
+        }
+        path = candidate;
+      }
+    } else if (!existingOriginal) {
+      normalizedPathMap.set(normalizedPath, relativeFile);
+    }
     seenPaths.add(path);
 
     const content = readFileSync(filepath, "utf-8");
@@ -2800,6 +2823,7 @@ function parseCLI() {
       force: { type: "boolean", short: "f" },
       // Update options
       pull: { type: "boolean" },  // git pull before update
+      "allow-run": { type: "boolean" },
       refresh: { type: "boolean" },
       // Get options
       l: { type: "string" },  // max lines
@@ -2870,7 +2894,7 @@ function showHelp(): void {
   console.log("  qmd get <file>[:line] [-l N] [--from N]  - Get document (optionally from line, max N lines)");
   console.log("  qmd multi-get <pattern> [-l N] [--max-bytes N]  - Get multiple docs by glob or comma-separated list");
   console.log("  qmd status                    - Show index status and collections");
-  console.log("  qmd update [--pull]           - Re-index all collections (--pull: git pull first)");
+  console.log("  qmd update [--pull] [--allow-run] - Re-index all collections (--allow-run: run collection update commands)");
   console.log("  qmd embed [-f]                - Create vector embeddings (800 tokens/chunk, 15% overlap)");
   console.log("  qmd cleanup                   - Remove cache and orphaned data, vacuum DB");
   console.log("  qmd search <query>            - Full-text search (BM25)");
@@ -3386,7 +3410,7 @@ if (import.meta.main) {
       break;
 
     case "update":
-      await handleUpdateCommand({ updateCollections });
+      await handleUpdateCommand(cli.values as Record<string, unknown>, { updateCollections });
       break;
 
     case "embed":

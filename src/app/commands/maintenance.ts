@@ -25,11 +25,13 @@ export function handleStatusCommand(
 }
 
 export async function handleUpdateCommand(
+  values: Record<string, unknown>,
   deps: {
-    updateCollections: () => Promise<void>;
+    updateCollections: (allowRun: boolean) => Promise<void>;
   }
 ): Promise<void> {
-  await deps.updateCollections();
+  const allowRun = values["allow-run"] === undefined ? false : Boolean(values["allow-run"]);
+  await deps.updateCollections(allowRun);
 }
 
 export async function handleEmbedCommand(
