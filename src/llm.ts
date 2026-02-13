@@ -757,13 +757,18 @@ export class LlamaCpp implements LLM {
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
 
+    const ChatSession = await ensureLlamaChatSession();
+    if (!ChatSession) {
+      throw new Error("LlamaChatSession is not available. Ensure node-llama-cpp is installed.");
+    }
+
     // Ensure model is loaded
     await this.ensureGenerateModel();
 
     // Create fresh context -> sequence -> session for each call
     const context = await this.generateModel!.createContext();
     const sequence = context.getSequence();
-    const session = new LlamaChatSession({ contextSequence: sequence });
+    const session = new ChatSession({ contextSequence: sequence });
 
     const maxTokens = options.maxTokens ?? 150;
     // Qwen3 recommends temp=0.7, topP=0.8, topK=20 for non-thinking mode
@@ -1061,17 +1066,12 @@ export class RemoteLLM implements LLM {
         // Build a temporary openai-like config from siliconflow settings
         const sf = this.config.siliconflow;
         if (!sf?.apiKey) throw new Error("SiliconFlow API key required for LLM rerank");
-        const savedOpenai = this.config.openai;
-        this.config.openai = {
+        const openaiOverride = {
           apiKey: sf.apiKey,
           baseUrl: (sf.baseUrl || "https://api.siliconflow.cn/v1").replace(/\/$/, ""),
           model: sf.queryExpansionModel || "zai-org/GLM-4.5-Air",
         };
-        try {
-          return await this.rerankWithOpenAI(query, documents, options);
-        } finally {
-          this.config.openai = savedOpenai;
-        }
+        return this.rerankWithOpenAI(query, documents, options, openaiOverride);
       }
       return this.rerankWithSiliconflow(query, documents, options);
     }
@@ -1565,9 +1565,10 @@ export class RemoteLLM implements LLM {
   private async rerankWithOpenAI(
     query: string,
     documents: RerankDocument[],
-    options: RerankOptions
+    options: RerankOptions,
+    openaiOverride?: { apiKey: string; baseUrl?: string; model?: string }
   ): Promise<RerankResult> {
-    const oa = this.config.openai;
+    const oa = openaiOverride || this.config.openai;
     if (!oa?.apiKey) {
       throw new Error("RemoteLLM openai.apiKey is required when rerankProvider is 'openai'.");
     }

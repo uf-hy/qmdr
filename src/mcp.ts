@@ -113,7 +113,12 @@ export async function startMcpServer(): Promise<void> {
     async (uri, { path }) => {
       // Decode URL-encoded path (MCP clients send encoded URIs)
       const pathStr = Array.isArray(path) ? path.join('/') : (path || '');
-      const decodedPath = decodeURIComponent(pathStr);
+      let decodedPath = "";
+      try {
+        decodedPath = decodeURIComponent(pathStr);
+      } catch {
+        return { contents: [{ uri: uri.href, text: `Invalid document path: ${pathStr}` }] };
+      }
 
       // Parse virtual path: collection/relative/path
       const parts = decodedPath.split('/');
@@ -134,9 +139,9 @@ export async function startMcpServer(): Promise<void> {
           SELECT d.collection, d.path, d.title, c.doc as body
           FROM documents d
           JOIN content c ON c.hash = d.hash
-          WHERE d.path LIKE ? AND d.active = 1
+          WHERE d.collection = ? AND d.path LIKE ? AND d.active = 1
           LIMIT 1
-        `).get(`%${relativePath}`) as { collection: string; path: string; title: string; body: string } | null;
+        `).get(collection, `%${relativePath}`) as { collection: string; path: string; title: string; body: string } | null;
       }
 
       if (!doc) {
