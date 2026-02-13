@@ -209,6 +209,7 @@ function formatETA(seconds: number): string {
 
 // Check index health and print warnings/tips
 function checkIndexHealth(db: Database): void {
+  if (_quietMode) return;
   const { needsEmbedding, totalDocs, daysStale } = getIndexHealth(db);
 
   // Warn if many docs need embedding
