@@ -2318,7 +2318,7 @@ async function vectorSearch(query: string, opts: OutputOptions, model: string = 
       }
     }
 
-    process.stderr.write(`${c.dim}Searching ${vectorQueries.length} vector queries...${c.reset}\n`);
+    if (!_quietMode) process.stderr.write(`${c.dim}Searching ${vectorQueries.length} vector queries...${c.reset}\n`);
 
     // Collect results from all query variations
     const perQueryLimit = opts.all ? 500 : 20;
