@@ -112,6 +112,20 @@ qmd doctor          # check providers
 qmd doctor --bench  # optional: query quality test
 ```
 
+## 3.5 Diagnostics
+
+**Profile query performance** — find bottlenecks in the search pipeline:
+```bash
+qmd query "your question" --profile
+```
+Shows timing breakdown: query expansion → BM25 retrieval → vector search → reranking → total. Reranking typically takes 60-80% of total time. Use this to decide if you need a faster reranker.
+
+**Verbose output** — see the full query process (expanded queries, chunk selection, reranker scores):
+```bash
+qmd query "your question" --verbose
+```
+Default output is minimal (results only, ~400 tokens). `--verbose` shows everything (~3700 tokens). `--profile` auto-enables verbose.
+
 ## 4. Client Integration
 
 ### OpenClaw
@@ -144,6 +158,8 @@ qmd query "test" -c memory  # empty result = no .md files in path
 
 `command`: `"qmd"` (global) or absolute path to `src/qmd.ts` (source mode — needs `#!/usr/bin/env bun` shebang + chmod +x).
 Never use `"bun /path/to/qmd.ts"` — bun misparses subcommands.
+
+**Sessions indexing** — `"sessions": { "enabled": true }` exports your AI conversation history as markdown files and indexes them. This means QMDR can search through past conversations, decisions, and context — not just your static markdown files. Highly recommended for personal knowledge retrieval.
 
 Env keys: `~/.config/qmd/.env` auto-loaded (recommended). Or add to launchd/systemd. Process env > .env.
 
