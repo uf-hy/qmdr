@@ -55,7 +55,7 @@ jobs:
           - os: macos-latest
             target: darwin-arm64
             artifact: qmd-darwin-arm64
-          - os: macos-13
+          - os: macos-latest
             target: darwin-x64
             artifact: qmd-darwin-x64
           - os: ubuntu-latest
@@ -167,6 +167,7 @@ jobs:
     needs:
       - build
       - publish-npm
+    if: always() && needs.publish-npm.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
