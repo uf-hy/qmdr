@@ -60,5 +60,9 @@
     "embeddings",
     "ollama"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/uf-hy/qmdr"
+  }
 }
