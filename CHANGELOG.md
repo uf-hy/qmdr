@@ -2,18 +2,38 @@
 
 QMDR 的所有重要变更记录。
 
-## [未发布]
+## [1.0.3] — 2026-02-13
 
 ### 新增
-- `qmd query` 新增 `--profile` 参数 — 显示每步耗时明细（查询扩展、检索、重排），含耗时占比和毫秒数
-- 新增 Dashscope 重排 provider（阿里云免费额度）
+- `qmd query --profile` — 显示每步耗时明细（查询扩展、检索、重排），含耗时占比和毫秒数
+- `qmd query --verbose` — 显示完整查询过程（默认精简输出，省 89% token）
+- Dashscope 重排 provider（阿里百炼 qwen3-rerank，免费额度）
+- Windows x64 和 macOS x64 (Intel) 二进制发布（共 5 平台）
+- AI-SETUP.md 新增诊断工具章节和 Sessions 索引说明
+
+### 安全修复
+- symlink 逃逸防护：禁用 followSymlinks + realpath 校验不逃逸集合根目录
+- sqlite 动态扩展加载默认禁用（需 QMD_ALLOW_SQLITE_EXTENSIONS=1 启用）
+- bash -c update 命令加 --allow-run 门控
+- 大小写不敏感文件系统路径检查（macOS/Windows）
+- per-DB WeakSet 替换全局 boolean（多连接安全）
+- vector 功能优雅降级（扩展禁用时不崩溃）
+- rerank 不再修改共享 config 对象（并发安全）
+- cache key 稳定排序序列化
+- MCP decodeURIComponent 防崩溃
+- 大文件/二进制文件索引跳过保护（默认 8MB 上限）
+- QMD_MAX_INDEX_FILE_BYTES NaN 防护
 
 ### 变更
 - `--profile` 输出改为中文紧凑 TSV 格式
+- 统一 isVectorRuntimeAvailable() 判断（表存在 + 扩展启用）
 
 ### CI
-- 新增 Nightly 回归测试层，附带日志归档
-- 集成测试预检的 secrets 保护
+- Full Code Audit workflow（GPT-5.2 xhigh 全量审计）
+- OpenCode PR Review workflow（自动 code review）
+- Nightly 回归测试层，附带日志归档
+- PR quality gates
+- Windows x64 + macOS x64 构建目标
 
 ---
 
