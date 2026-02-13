@@ -13,7 +13,7 @@
 
 import { Database } from "bun:sqlite";
 import { Glob } from "bun";
-import { existsSync, realpathSync, readdirSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as sqliteVec from "sqlite-vec";
 import {
@@ -412,6 +412,19 @@ export function toVirtualPath(db: Database, absolutePath: string): string | null
 // Database initialization
 // =============================================================================
 
+function isSQLiteExtensionLoadingAllowed(): boolean {
+  return Bun.env.QMD_ALLOW_SQLITE_EXTENSIONS === "1";
+}
+
+let _sqliteVecLoaded = false;
+
+function looksLikeSqliteVecNotFoundError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message || "";
+  const m = msg.toLowerCase();
+  return m.includes("sqlite-vec") && (m.includes("not found") || m.includes("unable") || m.includes("loadable") || m.includes("loadble"));
+}
+
 function setSQLiteFromBrewPrefixEnv(): void {
   const candidates: string[] = [];
 
@@ -443,6 +456,12 @@ setSQLiteFromBrewPrefixEnv();
 function resolveSqliteVecFallbackPaths(): string[] {
   const candidates = new Set<string>();
 
+  if (!isSQLiteExtensionLoadingAllowed()) {
+    return [];
+  }
+
+  const ext = process.platform === "win32" ? "dll" : process.platform === "linux" ? "so" : "dylib";
+
   // Environment override for custom deployments.
   if (Bun.env.QMD_SQLITE_VEC_PATH) {
     candidates.add(Bun.env.QMD_SQLITE_VEC_PATH);
@@ -450,8 +469,8 @@ function resolveSqliteVecFallbackPaths(): string[] {
 
   // Homebrew common location.
   if (process.platform === "darwin") {
-    candidates.add("/opt/homebrew/lib/vec0.dylib");
-    candidates.add("/usr/local/lib/vec0.dylib");
+    candidates.add(`/opt/homebrew/lib/vec0.${ext}`);
+    candidates.add(`/usr/local/lib/vec0.${ext}`);
   }
 
   // Resolve from local node_modules, regardless of user home directory.
@@ -464,7 +483,7 @@ function resolveSqliteVecFallbackPaths(): string[] {
         : null;
 
   if (packageName) {
-    const localPath = join(process.cwd(), "node_modules", packageName, "vec0.dylib");
+    const localPath = join(process.cwd(), "node_modules", packageName, `vec0.${ext}`);
     candidates.add(localPath);
   }
 
@@ -474,7 +493,7 @@ function resolveSqliteVecFallbackPaths(): string[] {
     for (let i = 0; i < 8; i++) {
       if (!dir || dir === "/") break;
       if (packageName) {
-        candidates.add(join(dir, "node_modules", packageName, "vec0.dylib"));
+        candidates.add(join(dir, "node_modules", packageName, `vec0.${ext}`));
       }
       const parent = dirname(dir);
       if (parent === dir) break;
@@ -484,50 +503,48 @@ function resolveSqliteVecFallbackPaths(): string[] {
     // ignore
   }
 
-  // Also scan node_modules for any sqlite-vec-* package and prefer first existing candidate.
-  try {
-    const modulesDir = join(process.cwd(), "node_modules");
-    if (existsSync(modulesDir)) {
-      for (const entry of readdirSync(modulesDir)) {
-        if (entry.startsWith("sqlite-vec-")) {
-          candidates.add(join(modulesDir, entry, "vec0.dylib"));
-        }
-      }
-    }
-  } catch {
-    // ignore
-  }
-
   return [...candidates];
 }
 
-function initializeDatabase(db: Database): void {
+function loadSqliteVecExtension(db: Database): void {
+  if (_sqliteVecLoaded) return;
+  if (!isSQLiteExtensionLoadingAllowed()) return;
+
   try {
     sqliteVec.load(db);
+    _sqliteVecLoaded = true;
+    return;
   } catch (err) {
     // Fallback for compiled binary: import.meta.url resolves to /$bunfs/root/
     // so sqlite-vec can't find the dynamic library. Try runtime-discovered paths.
-    if (err instanceof Error && err.message.includes("Loadble extension for sqlite-vec not found")) {
+    if (looksLikeSqliteVecNotFoundError(err)) {
       const fallbackPaths = resolveSqliteVecFallbackPaths();
-      let loaded = false;
       for (const p of fallbackPaths) {
         try {
           if (!existsSync(p)) continue;
-          db.loadExtension(p.replace(/\.dylib$/, ""));
-          loaded = true;
-          break;
+          db.loadExtension(p.replace(/\.(dylib|so|dll)$/i, ""));
+          _sqliteVecLoaded = true;
+          return;
         } catch { /* try next */ }
       }
-      if (!loaded) throw err;
-    } else if (err instanceof Error && err.message.includes("does not support dynamic extension loading")) {
+      throw err;
+    }
+    if (err instanceof Error && err.message.includes("does not support dynamic extension loading")) {
       throw new Error(
         "SQLite build does not support dynamic extension loading. " +
         "Install Homebrew SQLite so the sqlite-vec extension can be loaded, " +
         "and set BREW_PREFIX if Homebrew is installed in a non-standard location."
       );
-    } else {
-      throw err;
     }
+    throw err;
+  }
+}
+
+function initializeDatabase(db: Database): void {
+  // Security: disable SQLite dynamic extension loading by default.
+  // Opt in with QMD_ALLOW_SQLITE_EXTENSIONS=1.
+  if (isSQLiteExtensionLoadingAllowed()) {
+    loadSqliteVecExtension(db);
   }
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
@@ -646,6 +663,18 @@ function initializeDatabase(db: Database): void {
 
 
 function ensureVecTableInternal(db: Database, dimensions: number): void {
+  if (!isSQLiteExtensionLoadingAllowed()) {
+    throw new Error(
+      "Vector index requires sqlite-vec, but SQLite extensions are disabled. " +
+      "Set QMD_ALLOW_SQLITE_EXTENSIONS=1 to enable loading the sqlite-vec extension."
+    );
+  }
+
+  // Lazy-load sqlite-vec for callers that only need FTS/metadata.
+  if (!_sqliteVecLoaded) {
+    loadSqliteVecExtension(db);
+  }
+
   const tableInfo = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get() as { sql: string } | null;
   if (tableInfo) {
     const match = tableInfo.sql.match(/float\[(\d+)\]/);
@@ -1002,8 +1031,25 @@ export function getIndexHealth(db: Database): IndexHealthInfo {
 export function getCacheKey(url: string, body: object): string {
   const hash = new Bun.CryptoHasher("sha256");
   hash.update(url);
-  hash.update(JSON.stringify(body));
+  hash.update(stableStringify(body));
   return hash.digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  const normalize = (v: any): any => {
+    if (v === null || v === undefined) return v;
+    if (Array.isArray(v)) return v.map(normalize);
+    if (typeof v === "object") {
+      const out: Record<string, any> = {};
+      for (const k of Object.keys(v).sort()) {
+        out[k] = normalize(v[k]);
+      }
+      return out;
+    }
+    return v;
+  };
+
+  return JSON.stringify(normalize(value));
 }
 
 export function getCachedResult(db: Database, cacheKey: string): string | null {
@@ -1546,7 +1592,23 @@ export function findSimilarFiles(db: Database, query: string, maxDistance: numbe
     WHERE d.active = 1
   `).all() as { path: string }[];
   const queryLower = query.toLowerCase();
+
+  // Fast path: compare basenames first to reduce Levenshtein work.
+  const queryName = queryLower.split('/').pop() || queryLower;
+  const byName = allFiles
+    .map(f => {
+      const pLower = f.path.toLowerCase();
+      const name = pLower.split('/').pop() || pLower;
+      return { path: f.path, dist: levenshtein(name, queryName) };
+    })
+    .filter(f => f.dist <= maxDistance)
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, limit);
+  if (byName.length > 0) return byName.map(f => f.path);
+
+  // Fallback: full path compare, but only where length diff allows a match.
   const scored = allFiles
+    .filter(f => Math.abs(f.path.length - queryLower.length) <= maxDistance)
     .map(f => ({ path: f.path, dist: levenshtein(f.path.toLowerCase(), queryLower) }))
     .filter(f => f.dist <= maxDistance)
     .sort((a, b) => a.dist - b.dist)

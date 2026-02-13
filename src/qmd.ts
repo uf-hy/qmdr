@@ -1524,8 +1524,11 @@ function collectionRename(oldName: string, newName: string): void {
 async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, collectionName?: string, suppressEmbedNotice: boolean = false): Promise<void> {
   const db = getDb();
   const resolvedPwd = pwd || getPwd();
+  const collectionRoot = getRealPath(resolvedPwd).replace(/\\/g, "/");
+  const collectionRootPrefix = collectionRoot.endsWith("/") ? collectionRoot : collectionRoot + "/";
   const now = new Date().toISOString();
   const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
+  const maxIndexBytes = parseInt(process.env.QMD_MAX_INDEX_FILE_BYTES || String(8 * 1024 * 1024), 10);
 
   // Clear Ollama cache on index
   clearCache(db);
@@ -1540,7 +1543,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   progress.indeterminate();
   const glob = new Glob(globPattern);
   const files: string[] = [];
-  for await (const file of glob.scan({ cwd: resolvedPwd, onlyFiles: true, followSymlinks: true })) {
+  for await (const file of glob.scan({ cwd: resolvedPwd, onlyFiles: true, followSymlinks: false })) {
     // Skip node_modules, hidden folders (.*), and other common excludes
     const parts = file.split("/");
     const shouldSkip = parts.some(part =>
@@ -1565,9 +1568,20 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   const seenPaths = new Set<string>();
   const normalizedPathMap = new Map<string, string>();
   const startTime = Date.now();
+  let skippedSymlinkEscapes = 0;
+  let skippedTooLarge = 0;
+  let skippedBinary = 0;
+  let skippedUnreadable = 0;
 
   for (const relativeFile of files) {
-    const filepath = getRealPath(resolve(resolvedPwd, relativeFile));
+    const filepath = getRealPath(resolve(resolvedPwd, relativeFile)).replace(/\\/g, "/");
+    if (!(filepath === collectionRoot || filepath.startsWith(collectionRootPrefix))) {
+      skippedSymlinkEscapes++;
+      processed++;
+      progress.set((processed / total) * 100);
+      continue;
+    }
+
     const normalizedPath = handelize(relativeFile); // Normalize path for token-friendliness
     const existingOriginal = normalizedPathMap.get(normalizedPath);
     let path = normalizedPath;
@@ -1587,7 +1601,40 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     }
     seenPaths.add(path);
 
-    const content = readFileSync(filepath, "utf-8");
+    let stat: { size: number; mtime: Date; birthtime: Date } | null = null;
+    try {
+      stat = statSync(filepath);
+    } catch {
+      skippedUnreadable++;
+      processed++;
+      progress.set((processed / total) * 100);
+      continue;
+    }
+
+    if (stat.size > maxIndexBytes) {
+      skippedTooLarge++;
+      processed++;
+      progress.set((processed / total) * 100);
+      continue;
+    }
+
+    let content = "";
+    try {
+      const buf = readFileSync(filepath) as unknown as Uint8Array;
+      // Simple binary detection: skip files containing NUL byte.
+      if (buf.includes(0)) {
+        skippedBinary++;
+        processed++;
+        progress.set((processed / total) * 100);
+        continue;
+      }
+      content = new TextDecoder("utf-8", { fatal: true }).decode(buf);
+    } catch {
+      skippedUnreadable++;
+      processed++;
+      progress.set((processed / total) * 100);
+      continue;
+    }
 
     // Skip empty files - nothing useful to index
     if (!content.trim()) {
@@ -1613,7 +1660,6 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
       } else {
         // Content changed - insert new content hash and update document
         insertContent(db, hash, content, now);
-        const stat = statSync(filepath);
         updateDocument(db, existing.id, title, hash,
           stat ? new Date(stat.mtime).toISOString() : now);
         updated++;
@@ -1622,7 +1668,6 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
       // New document - insert content and document
       indexed++;
       insertContent(db, hash, content, now);
-      const stat = statSync(filepath);
       insertDocument(db, collectionName, path, title, hash,
         stat ? new Date(stat.birthtime).toISOString() : now,
         stat ? new Date(stat.mtime).toISOString() : now);
@@ -1655,6 +1700,18 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
 
   progress.clear();
   console.log(`\nIndexed: ${indexed} new, ${updated} updated, ${unchanged} unchanged, ${removed} removed`);
+  if (skippedSymlinkEscapes > 0) {
+    console.log(`${c.dim}Skipped ${skippedSymlinkEscapes} symlink-escaped file(s) outside collection root.${c.reset}`);
+  }
+  if (skippedTooLarge > 0) {
+    console.log(`${c.dim}Skipped ${skippedTooLarge} file(s) larger than ${maxIndexBytes} bytes.${c.reset}`);
+  }
+  if (skippedBinary > 0) {
+    console.log(`${c.dim}Skipped ${skippedBinary} binary file(s).${c.reset}`);
+  }
+  if (skippedUnreadable > 0) {
+    console.log(`${c.dim}Skipped ${skippedUnreadable} unreadable/invalid-utf8 file(s).${c.reset}`);
+  }
   if (orphanedContent > 0) {
     console.log(`Cleaned up ${orphanedContent} orphaned content hash(es)`);
   }
