@@ -2016,6 +2016,7 @@ type OutputOptions = {
   collection?: string;  // Filter by collection name (pwd suffix match)
   lineNumbers?: boolean; // Add line numbers to output
   context?: string;      // Optional context for query expansion
+  profile?: boolean;     // Show per-step timing breakdown
 };
 
 // Highlight query terms in text (skip short words < 3 chars)
@@ -2413,6 +2414,10 @@ async function querySearch(query: string, opts: OutputOptions, embedModel: strin
 async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: string, rerankModel: string): Promise<void> {
   console.log(`\n=== querySearch START: query="${query}" ===\n`);
   const db = getDb();
+  const _profile = opts.profile;
+  const _timings: { step: string; ms: number; detail?: string }[] = [];
+  const _t0 = Date.now();
+  let _tStep = _t0;
 
   // Validate collection filter if specified
   let collectionName: string | undefined;
@@ -2432,6 +2437,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
   // Run initial BM25 search (will be reused for retrieval)
   const initialFts = searchFTS(db, query, 20, collectionName as any);
   let hasVectors = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  if (_profile) { _timings.push({ step: "Initial FTS", ms: Date.now() - _tStep, detail: `${initialFts.length} results` }); _tStep = Date.now(); }
 
   // Check if initial results have strong signals (skip expansion if so)
   // Strong signal = top result is strong AND clearly separated from runner-up.
@@ -2454,6 +2460,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
         lines[lines.length - 1] = lines[lines.length - 1]!.replace('├─', '└─');
         for (const line of lines) process.stderr.write(line + '\n');
       }
+      if (_profile) { _timings.push({ step: "Query Expansion", ms: Date.now() - _tStep, detail: "skipped (strong BM25)" }); _tStep = Date.now(); }
     } else {
       // Weak signal - expand query for better recall
       const queryables = await expandQueryStructured(query, true, opts.context, session);
@@ -2465,6 +2472,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
           if (q.text && q.text !== query) vectorQueries.push(q.text);
         }
       }
+      if (_profile) { _timings.push({ step: "Query Expansion", ms: Date.now() - _tStep, detail: `${ftsQueries.length} lex + ${vectorQueries.length} vec queries` }); _tStep = Date.now(); }
     }
 
     process.stderr.write(`${c.dim}Searching ${ftsQueries.length} lexical + ${vectorQueries.length} vector queries...${c.reset}\n`);
@@ -2508,6 +2516,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     }
 
     await Promise.all(searchPromises);
+    if (_profile) { _timings.push({ step: "FTS + Vector Search", ms: Date.now() - _tStep, detail: `${rankedLists.length} ranked lists` }); _tStep = Date.now(); }
 
     // Apply Reciprocal Rank Fusion to combine all ranked lists
     // Give 2x weight to original query results (first 2 lists: FTS + vector)
@@ -2603,6 +2612,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
       }
       docChunkMap.set(cand.file, { chunks });
     }
+    if (_profile) { _timings.push({ step: "RRF + Chunk Selection", ms: Date.now() - _tStep, detail: `${candidates.length} docs → ${chunksToRerank.length} chunks` }); _tStep = Date.now(); }
 
     // DEBUG: Log selected chunks for reranking
     console.log("\n=== CHUNKS SENT TO RERANKER ===");
@@ -2622,6 +2632,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
       db,
       session
     );
+    if (_profile) { _timings.push({ step: "Reranking", ms: Date.now() - _tStep, detail: `${chunksToRerank.length} chunks via ${process.env.QMD_RERANK_PROVIDER || 'local'}` }); _tStep = Date.now(); }
 
     // DEBUG: Log reranker scores
     console.log("\n=== RERANKER SCORES ===");
@@ -2713,6 +2724,20 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     //   return true;
     // });
 
+    if (_profile) {
+      _timings.push({ step: "Score + Sort", ms: Date.now() - _tStep, detail: `${finalResults.length} final results` });
+      const totalMs = Date.now() - _t0;
+      process.stderr.write(`\n${c.cyan}${c.bold}┌─ Profile ─────────────────────────────────────────┐${c.reset}\n`);
+      for (const t of _timings) {
+        const pct = Math.round(t.ms / totalMs * 100);
+        const bar = "█".repeat(Math.max(1, Math.round(pct / 3))) + "░".repeat(Math.max(0, 33 - Math.round(pct / 3)));
+        process.stderr.write(`${c.cyan}│${c.reset} ${t.step.padEnd(22)} ${String(t.ms).padStart(6)}ms ${String(pct).padStart(3)}% ${bar} ${c.dim}${t.detail || ""}${c.reset}\n`);
+      }
+      process.stderr.write(`${c.cyan}│${c.reset}${"─".repeat(52)}\n`);
+      process.stderr.write(`${c.cyan}│${c.reset} ${"Total".padEnd(22)} ${String(totalMs).padStart(6)}ms\n`);
+      process.stderr.write(`${c.cyan}${c.bold}└───────────────────────────────────────────────────┘${c.reset}\n`);
+    }
+
     closeDb();
     outputResults(finalResults, query, opts);
   };
@@ -2764,6 +2789,8 @@ function parseCLI() {
       "line-numbers": { type: "boolean" },  // add line numbers to output
       // Doctor options
       bench: { type: "boolean" },  // enable quality benchmark in doctor
+      // Profile options
+      profile: { type: "boolean" },  // show per-step timing breakdown
     },
     allowPositionals: true,
     strict: false, // Allow unknown options to pass through
@@ -2797,6 +2824,7 @@ function parseCLI() {
     all: isAll,
     collection: values.collection as string | undefined,
     lineNumbers: !!values["line-numbers"],
+    profile: !!values.profile,
   };
 
   return {
@@ -2832,6 +2860,7 @@ function showHelp(): void {
   console.log("");
   console.log("Global options:");
   console.log("  --index <name>             - Use custom index name (default: index)");
+  console.log("  --profile                  - Show per-step timing breakdown (query command)");
   console.log("");
   console.log("Search options:");
   console.log("  -n <num>                   - Number of results (default: 5, or 20 for --files)");
