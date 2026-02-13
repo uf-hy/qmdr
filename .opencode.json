@@ -12,7 +12,7 @@
   },
   "model": {
     "provider": "custom",
-    "id": "gpt-5.2-codex",
+    "id": "gpt-5.2",
     "reasoningEffort": "xhigh"
   }
 }
