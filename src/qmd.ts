@@ -209,6 +209,7 @@ function formatETA(seconds: number): string {
 
 // Check index health and print warnings/tips
 function checkIndexHealth(db: Database): void {
+  if (_quietMode) return;
   const { needsEmbedding, totalDocs, daysStale } = getIndexHealth(db);
 
   // Warn if many docs need embedding
@@ -265,6 +266,7 @@ function computeDisplayPath(
 
 // Remote LLM instance (initialized from env vars; handles rerank + embed + query expansion)
 let remoteLLM: RemoteLLM | null = null;
+let _quietMode = false;  // Suppress progress/debug output (set by query command)
 const llmService = createLLMService();
 
 function getRemoteLLM(): RemoteLLM | null {
@@ -379,8 +381,8 @@ async function rerank(query: string, documents: { file: string; text: string }[]
   // Try remote reranker first
   const remote = getRemoteReranker();
   if (remote) {
-    process.stderr.write(`Reranking ${total} documents (remote: ${process.env.QMD_RERANK_PROVIDER})...\n`);
-    progress.indeterminate();
+    if (!_quietMode) process.stderr.write(`Reranking ${total} documents (remote: ${process.env.QMD_RERANK_PROVIDER})...\n`);
+    if (!_quietMode) progress.indeterminate();
 
     const rerankDocs: RerankDocument[] = documents.map((doc) => ({
       file: doc.file,
@@ -389,15 +391,15 @@ async function rerank(query: string, documents: { file: string; text: string }[]
 
     const result = await remote.rerank(query, rerankDocs);
 
-    progress.clear();
-    process.stderr.write("\n");
+    if (!_quietMode) progress.clear();
+    if (!_quietMode) process.stderr.write("\n");
 
     return result.results.map((r) => ({ file: r.file, score: r.score, extract: r.extract }));
   }
 
   // Fall back to local LlamaCpp reranker
-  process.stderr.write(`Reranking ${total} documents...\n`);
-  progress.indeterminate();
+  if (!_quietMode) process.stderr.write(`Reranking ${total} documents...\n`);
+  if (!_quietMode) progress.indeterminate();
 
   const rerankDocs: RerankDocument[] = documents.map((doc) => ({
     file: doc.file,
@@ -408,8 +410,8 @@ async function rerank(query: string, documents: { file: string; text: string }[]
     ? await session.rerank(query, rerankDocs)
     : await getDefaultLlamaCpp().rerank(query, rerankDocs);
 
-  progress.clear();
-  process.stderr.write("\n");
+  if (!_quietMode) progress.clear();
+  if (!_quietMode) process.stderr.write("\n");
 
   return result.results.map((r) => ({ file: r.file, score: r.score }));
 }
@@ -2017,6 +2019,7 @@ type OutputOptions = {
   lineNumbers?: boolean; // Add line numbers to output
   context?: string;      // Optional context for query expansion
   profile?: boolean;     // Show per-step timing breakdown
+  verbose?: boolean;     // Show detailed debug output (chunk selection, reranker scores, etc.)
 };
 
 // Highlight query terms in text (skip short words < 3 chars)
@@ -2316,7 +2319,7 @@ async function vectorSearch(query: string, opts: OutputOptions, model: string = 
       }
     }
 
-    process.stderr.write(`${c.dim}Searching ${vectorQueries.length} vector queries...${c.reset}\n`);
+    if (!_quietMode) process.stderr.write(`${c.dim}Searching ${vectorQueries.length} vector queries...${c.reset}\n`);
 
     // Collect results from all query variations
     const perQueryLimit = opts.all ? 500 : 20;
@@ -2355,35 +2358,37 @@ async function vectorSearch(query: string, opts: OutputOptions, model: string = 
 }
 
 // Expand query using structured output with GBNF grammar
-async function expandQueryStructured(query: string, includeLexical: boolean = true, context?: string, session?: ILLMSession): Promise<Queryable[]> {
-  process.stderr.write(`${c.dim}Expanding query...${c.reset}\n`);
+async function expandQueryStructured(query: string, includeLexical: boolean = true, context?: string, session?: ILLMSession, quiet?: boolean): Promise<Queryable[]> {
+  if (!quiet) process.stderr.write(`${c.dim}Expanding query...${c.reset}\n`);
   const queryables = await llmService.expandQuery(query, { includeLexical, context }, session);
 
   // Log the expansion as a tree
-  const lines: string[] = [];
-  const bothLabel = includeLexical ? ' · (lexical+vector)' : ' · (vector)';
-  lines.push(`${c.dim}├─ ${query}${bothLabel}${c.reset}`);
+  if (!quiet) {
+    const lines: string[] = [];
+    const bothLabel = includeLexical ? ' · (lexical+vector)' : ' · (vector)';
+    lines.push(`${c.dim}├─ ${query}${bothLabel}${c.reset}`);
 
-  for (let i = 0; i < queryables.length; i++) {
-    const q = queryables[i];
-    if (!q || q.text === query) continue;
+    for (let i = 0; i < queryables.length; i++) {
+      const q = queryables[i];
+      if (!q || q.text === query) continue;
 
-    let textPreview = q.text.replace(/\n/g, ' ');
-    if (textPreview.length > 80) {
-      textPreview = textPreview.substring(0, 77) + '...';
+      let textPreview = q.text.replace(/\n/g, ' ');
+      if (textPreview.length > 80) {
+        textPreview = textPreview.substring(0, 77) + '...';
+      }
+
+      const label = q.type === 'lex' ? 'lexical' : (q.type === 'hyde' ? 'hyde' : 'vector');
+      lines.push(`${c.dim}├─ ${textPreview} · (${label})${c.reset}`);
     }
 
-    const label = q.type === 'lex' ? 'lexical' : (q.type === 'hyde' ? 'hyde' : 'vector');
-    lines.push(`${c.dim}├─ ${textPreview} · (${label})${c.reset}`);
-  }
+    // Fix last item to use └─ instead of ├─
+    if (lines.length > 0) {
+      lines[lines.length - 1] = lines[lines.length - 1]!.replace('├─', '└─');
+    }
 
-  // Fix last item to use └─ instead of ├─
-  if (lines.length > 0) {
-    lines[lines.length - 1] = lines[lines.length - 1]!.replace('├─', '└─');
-  }
-
-  for (const line of lines) {
-    process.stderr.write(line + '\n');
+    for (const line of lines) {
+      process.stderr.write(line + '\n');
+    }
   }
 
   return queryables;
@@ -2412,9 +2417,12 @@ async function querySearch(query: string, opts: OutputOptions, embedModel: strin
 }
 
 async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: string, rerankModel: string): Promise<void> {
-  console.log(`\n=== querySearch START: query="${query}" ===\n`);
+  if (opts.verbose || opts.profile) console.log(`\n=== querySearch START: query="${query}" ===\n`);
   const db = getDb();
   const _profile = opts.profile;
+  const _verbose = opts.verbose || opts.profile;
+  const prevQuietMode = _quietMode;
+  _quietMode = !_verbose;
   const _timings: { step: string; ms: number; detail?: string }[] = [];
   const _t0 = Date.now();
   let _tStep = _t0;
@@ -2453,8 +2461,8 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
 
     if (hasStrongSignal) {
       // Strong BM25 signal - skip expensive LLM expansion
-      process.stderr.write(`${c.dim}Strong BM25 signal (${topScore.toFixed(2)}) - skipping expansion${c.reset}\n`);
-      {
+      if (_verbose) {
+        process.stderr.write(`${c.dim}Strong BM25 signal (${topScore.toFixed(2)}) - skipping expansion${c.reset}\n`);
         const lines: string[] = [];
         lines.push(`${c.dim}├─ ${query} · (lexical+vector)${c.reset}`);
         lines[lines.length - 1] = lines[lines.length - 1]!.replace('├─', '└─');
@@ -2463,7 +2471,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
       if (_profile) { _timings.push({ step: "查询扩展", ms: Date.now() - _tStep, detail: "跳过(强BM25信号)" }); _tStep = Date.now(); }
     } else {
       // Weak signal - expand query for better recall
-      const queryables = await expandQueryStructured(query, true, opts.context, session);
+      const queryables = await expandQueryStructured(query, true, opts.context, session, !_verbose);
 
       for (const q of queryables) {
         if (q.type === 'lex') {
@@ -2475,7 +2483,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
       if (_profile) { _timings.push({ step: "查询扩展", ms: Date.now() - _tStep, detail: `${ftsQueries.length}词法 + ${vectorQueries.length}向量` }); _tStep = Date.now(); }
     }
 
-    process.stderr.write(`${c.dim}Searching ${ftsQueries.length} lexical + ${vectorQueries.length} vector queries...${c.reset}\n`);
+    if (_verbose) process.stderr.write(`${c.dim}Searching ${ftsQueries.length} lexical + ${vectorQueries.length} vector queries...${c.reset}\n`);
 
     // Collect ranked result lists for RRF fusion
     const rankedLists: RankedResult[][] = [];
@@ -2569,9 +2577,11 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
       return [...new Set(terms)];
     };
     const queryTerms = extractTerms(query);
-    console.log("\n=== QUERY TERMS ===");
-    console.log(`  ${queryTerms.join(', ')}`);
-    console.log("");
+    if (_verbose) {
+      console.log("\n=== QUERY TERMS ===");
+      console.log(`  ${queryTerms.join(', ')}`);
+      console.log("");
+    }
     
     for (const cand of candidates) {
       const chunks = chunkDocument(cand.body);
@@ -2592,7 +2602,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
       const selectedChunkIndexes = sortedChunkIndexes.slice(0, Math.min(PER_DOC_CHUNK_LIMIT, chunks.length));
 
       // DEBUG: Log chunk selection for MEMORY.md
-      if (cand.file.includes('memory.md') && chunks.length > 1) {
+      if (_verbose && cand.file.includes('memory.md') && chunks.length > 1) {
         console.log(`\n=== CHUNK SELECTION: ${cand.file} ===`);
         for (let i = 0; i < chunks.length; i++) {
           const preview = chunks[i]!.text.substring(0, 80).replace(/\n/g, ' ');
@@ -2615,14 +2625,16 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     if (_profile) { _timings.push({ step: "融合+分块", ms: Date.now() - _tStep, detail: `${candidates.length}文档→${chunksToRerank.length}块` }); _tStep = Date.now(); }
 
     // DEBUG: Log selected chunks for reranking
-    console.log("\n=== CHUNKS SENT TO RERANKER ===");
-    for (let i = 0; i < Math.min(6, chunksToRerank.length); i++) {
-      const ch = chunksToRerank[i]!;
-      const fname = ch.file.split('/').pop();
-      const preview = ch.text.substring(0, 100).replace(/\n/g, ' ');
-      console.log(`  ${i+1}. ${fname} chunk#${ch.chunkIdx}: ${preview}...`);
+    if (_verbose) {
+      console.log("\n=== CHUNKS SENT TO RERANKER ===");
+      for (let i = 0; i < Math.min(6, chunksToRerank.length); i++) {
+        const ch = chunksToRerank[i]!;
+        const fname = ch.file.split('/').pop();
+        const preview = ch.text.substring(0, 100).replace(/\n/g, ' ');
+        console.log(`  ${i+1}. ${fname} chunk#${ch.chunkIdx}: ${preview}...`);
+      }
+      console.log("");
     }
-    console.log("");
 
     // Rerank selected chunks (with caching).
     const reranked = await rerank(
@@ -2635,12 +2647,14 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     if (_profile) { _timings.push({ step: "重排", ms: Date.now() - _tStep, detail: `${chunksToRerank.length}块 via ${process.env.QMD_RERANK_PROVIDER || 'local'}` }); _tStep = Date.now(); }
 
     // DEBUG: Log reranker scores
-    console.log("\n=== RERANKER SCORES ===");
-    for (let i = 0; i < Math.min(6, reranked.length); i++) {
-      const r = reranked[i]!;
-      console.log(`  ${i+1}. score=${r.score.toFixed(4)} ${r.file.split('/').pop()}`);
+    if (_verbose) {
+      console.log("\n=== RERANKER SCORES ===");
+      for (let i = 0; i < Math.min(6, reranked.length); i++) {
+        const r = reranked[i]!;
+        console.log(`  ${i+1}. score=${r.score.toFixed(4)} ${r.file.split('/').pop()}`);
+      }
+      console.log("");
     }
-    console.log("");
 
     // Check if LLM rerank returned extracts (indicates LLM extraction mode)
     const hasExtracts = reranked.some(r => r.extract);
@@ -2702,19 +2716,23 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     });
 
     // DEBUG: before sort
-    console.log("\n=== BEFORE SORT ===");
-    for (let i = 0; i < Math.min(3, finalResults.length); i++) {
-      console.log(`  ${i}: score=${finalResults[i]!.score.toFixed(4)} ${finalResults[i]!.displayPath}`);
+    if (_verbose) {
+      console.log("\n=== BEFORE SORT ===");
+      for (let i = 0; i < Math.min(3, finalResults.length); i++) {
+        console.log(`  ${i}: score=${finalResults[i]!.score.toFixed(4)} ${finalResults[i]!.displayPath}`);
+      }
     }
 
     finalResults.sort((a, b) => b.score - a.score);
 
     // DEBUG: after sort
-    console.log("\n=== AFTER SORT ===");
-    for (let i = 0; i < Math.min(6, finalResults.length); i++) {
-      console.log(`  ${i}: score=${finalResults[i]!.score.toFixed(4)} ${finalResults[i]!.displayPath}`);
+    if (_verbose) {
+      console.log("\n=== AFTER SORT ===");
+      for (let i = 0; i < Math.min(6, finalResults.length); i++) {
+        console.log(`  ${i}: score=${finalResults[i]!.score.toFixed(4)} ${finalResults[i]!.displayPath}`);
+      }
+      console.log("");
     }
-    console.log("");
 
     // File-level dedup DISABLED — allow multiple chunks from same file to surface
     // const seenFiles = new Set<string>();
@@ -2739,9 +2757,13 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     outputResults(finalResults, query, opts);
   };
 
+  try {
   await llmService.withSession(async (session) => {
     await runQuerySearch(session);
   }, { maxDuration: 10 * 60 * 1000, name: 'querySearch' });
+  } finally {
+    _quietMode = prevQuietMode;
+  }
 }
 
 // Parse CLI arguments using util.parseArgs
@@ -2788,6 +2810,7 @@ function parseCLI() {
       bench: { type: "boolean" },  // enable quality benchmark in doctor
       // Profile options
       profile: { type: "boolean" },  // show per-step timing breakdown
+      verbose: { type: "boolean", short: "v" },  // show detailed debug output
     },
     allowPositionals: true,
     strict: false, // Allow unknown options to pass through
@@ -2822,6 +2845,7 @@ function parseCLI() {
     collection: values.collection as string | undefined,
     lineNumbers: !!values["line-numbers"],
     profile: !!values.profile,
+    verbose: !!values.verbose,
   };
 
   return {
@@ -2858,6 +2882,7 @@ function showHelp(): void {
   console.log("Global options:");
   console.log("  --index <name>             - Use custom index name (default: index)");
   console.log("  --profile                  - Show per-step timing breakdown (query command)");
+  console.log("  -v, --verbose              - Show detailed debug output (chunk selection, reranker scores)");
   console.log("");
   console.log("Search options:");
   console.log("  -n <num>                   - Number of results (default: 5, or 20 for --files)");
