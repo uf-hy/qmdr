@@ -2437,7 +2437,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
   // Run initial BM25 search (will be reused for retrieval)
   const initialFts = searchFTS(db, query, 20, collectionName as any);
   let hasVectors = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
-  if (_profile) { _timings.push({ step: "Initial FTS", ms: Date.now() - _tStep, detail: `${initialFts.length} results` }); _tStep = Date.now(); }
+  if (_profile) { _timings.push({ step: "初始FTS", ms: Date.now() - _tStep, detail: `${initialFts.length} results` }); _tStep = Date.now(); }
 
   // Check if initial results have strong signals (skip expansion if so)
   // Strong signal = top result is strong AND clearly separated from runner-up.
@@ -2460,7 +2460,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
         lines[lines.length - 1] = lines[lines.length - 1]!.replace('├─', '└─');
         for (const line of lines) process.stderr.write(line + '\n');
       }
-      if (_profile) { _timings.push({ step: "Query Expansion", ms: Date.now() - _tStep, detail: "skipped (strong BM25)" }); _tStep = Date.now(); }
+      if (_profile) { _timings.push({ step: "查询扩展", ms: Date.now() - _tStep, detail: "跳过(强BM25信号)" }); _tStep = Date.now(); }
     } else {
       // Weak signal - expand query for better recall
       const queryables = await expandQueryStructured(query, true, opts.context, session);
@@ -2472,7 +2472,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
           if (q.text && q.text !== query) vectorQueries.push(q.text);
         }
       }
-      if (_profile) { _timings.push({ step: "Query Expansion", ms: Date.now() - _tStep, detail: `${ftsQueries.length} lex + ${vectorQueries.length} vec queries` }); _tStep = Date.now(); }
+      if (_profile) { _timings.push({ step: "查询扩展", ms: Date.now() - _tStep, detail: `${ftsQueries.length}词法 + ${vectorQueries.length}向量` }); _tStep = Date.now(); }
     }
 
     process.stderr.write(`${c.dim}Searching ${ftsQueries.length} lexical + ${vectorQueries.length} vector queries...${c.reset}\n`);
@@ -2516,7 +2516,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     }
 
     await Promise.all(searchPromises);
-    if (_profile) { _timings.push({ step: "FTS + Vector Search", ms: Date.now() - _tStep, detail: `${rankedLists.length} ranked lists` }); _tStep = Date.now(); }
+    if (_profile) { _timings.push({ step: "检索", ms: Date.now() - _tStep, detail: `${rankedLists.length}组结果` }); _tStep = Date.now(); }
 
     // Apply Reciprocal Rank Fusion to combine all ranked lists
     // Give 2x weight to original query results (first 2 lists: FTS + vector)
@@ -2612,7 +2612,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
       }
       docChunkMap.set(cand.file, { chunks });
     }
-    if (_profile) { _timings.push({ step: "RRF + Chunk Selection", ms: Date.now() - _tStep, detail: `${candidates.length} docs → ${chunksToRerank.length} chunks` }); _tStep = Date.now(); }
+    if (_profile) { _timings.push({ step: "融合+分块", ms: Date.now() - _tStep, detail: `${candidates.length}文档→${chunksToRerank.length}块` }); _tStep = Date.now(); }
 
     // DEBUG: Log selected chunks for reranking
     console.log("\n=== CHUNKS SENT TO RERANKER ===");
@@ -2632,7 +2632,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
       db,
       session
     );
-    if (_profile) { _timings.push({ step: "Reranking", ms: Date.now() - _tStep, detail: `${chunksToRerank.length} chunks via ${process.env.QMD_RERANK_PROVIDER || 'local'}` }); _tStep = Date.now(); }
+    if (_profile) { _timings.push({ step: "重排", ms: Date.now() - _tStep, detail: `${chunksToRerank.length}块 via ${process.env.QMD_RERANK_PROVIDER || 'local'}` }); _tStep = Date.now(); }
 
     // DEBUG: Log reranker scores
     console.log("\n=== RERANKER SCORES ===");
@@ -2725,14 +2725,14 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     // });
 
     if (_profile) {
-      _timings.push({ step: "Score+Sort", ms: Date.now() - _tStep, detail: `${finalResults.length} results` });
+      _timings.push({ step: "排序", ms: Date.now() - _tStep, detail: `${finalResults.length}条结果` });
       const totalMs = Date.now() - _t0;
-      process.stderr.write(`\n${c.dim}step\tms\t%\tdetail${c.reset}\n`);
+      process.stderr.write(`\n${c.dim}步骤\tms\t占比\t详情${c.reset}\n`);
       for (const t of _timings) {
         const pct = Math.round(t.ms / totalMs * 100);
         process.stderr.write(`${t.step}\t${t.ms}\t${pct}%\t${t.detail || ""}\n`);
       }
-      process.stderr.write(`${c.bold}total\t${totalMs}\t100%${c.reset}\n`);
+      process.stderr.write(`${c.bold}合计\t${totalMs}\t100%${c.reset}\n`);
     }
 
     closeDb();
