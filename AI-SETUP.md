@@ -15,14 +15,20 @@ bun install -g github:uf-hy/qmdr
 
 **Path B — Binary (no Bun needed):**
 
-Available: macOS arm64, Linux x64, Linux arm64. Windows and macOS Intel → use Path A.
+Available: macOS arm64/x64, Linux x64/arm64, Windows x64. Windows ARM → use x64 binary (runs via emulation).
 
 ```bash
 OS=$(uname -s | tr A-Z a-z); ARCH=$(uname -m); [ "$ARCH" = "x86_64" ] && ARCH="x64"
 DIR=/usr/local/bin; [ ! -w "$DIR" ] && DIR="$HOME/.local/bin" && mkdir -p "$DIR"
 curl -L "https://github.com/uf-hy/qmdr/releases/latest/download/qmd-${OS}-${ARCH}" -o "$DIR/qmd" && chmod +x "$DIR/qmd"
 ```
-Binary: sqlite-vec must be loadable. macOS: `brew install sqlite`. Linux: `apt install libsqlite3-dev` (or equivalent). Or set `QMD_SQLITE_VEC_PATH`.
+
+**Windows (PowerShell):**
+```powershell
+Invoke-WebRequest "https://github.com/uf-hy/qmdr/releases/latest/download/qmd-windows-x64.exe" -OutFile "$env:LOCALAPPDATA\qmd.exe"
+# Add to PATH if needed: [Environment]::SetEnvironmentVariable("Path", "$env:Path;$env:LOCALAPPDATA", "User")
+```
+Binary: sqlite-vec must be loadable (`QMD_ALLOW_SQLITE_EXTENSIONS=1`). macOS: `brew install sqlite`. Linux: `apt install libsqlite3-dev`. Windows: sqlite3.dll usually bundled. Or set `QMD_SQLITE_VEC_PATH`.
 
 Verify: `qmd --help`. If not found, ensure install dir is in PATH.
 

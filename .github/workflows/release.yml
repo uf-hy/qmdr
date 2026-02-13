@@ -55,12 +55,18 @@ jobs:
           - os: macos-latest
             target: darwin-arm64
             artifact: qmd-darwin-arm64
+          - os: macos-13
+            target: darwin-x64
+            artifact: qmd-darwin-x64
           - os: ubuntu-latest
             target: linux-x64
             artifact: qmd-linux-x64
           - os: ubuntu-latest
             target: linux-arm64
             artifact: qmd-linux-arm64
+          - os: windows-latest
+            target: windows-x64
+            artifact: qmd-windows-x64
 
     runs-on: ${{ matrix.os }}
 
@@ -75,34 +81,48 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build binary
+        shell: bash
         run: |
-          if [ "${{ matrix.target }}" = "linux-arm64" ]; then
-            bun build --compile --target=bun-linux-arm64 \
-              --external node-llama-cpp --external @node-llama-cpp \
-              src/qmd.ts --outfile ${{ matrix.artifact }}
-          else
-            bun build --compile \
-              --external node-llama-cpp --external @node-llama-cpp \
-              src/qmd.ts --outfile ${{ matrix.artifact }}
-          fi
+          COMPILE_ARGS="--compile --external node-llama-cpp --external @node-llama-cpp"
+          case "${{ matrix.target }}" in
+            linux-arm64)
+              bun build $COMPILE_ARGS --target=bun-linux-arm64 src/qmd.ts --outfile ${{ matrix.artifact }} ;;
+            darwin-x64)
+              bun build $COMPILE_ARGS --target=bun-darwin-x64 src/qmd.ts --outfile ${{ matrix.artifact }} ;;
+            windows-x64)
+              bun build $COMPILE_ARGS --target=bun-windows-x64 src/qmd.ts --outfile ${{ matrix.artifact }}.exe ;;
+            *)
+              bun build $COMPILE_ARGS src/qmd.ts --outfile ${{ matrix.artifact }} ;;
+          esac
 
       - name: Test binary
-        if: matrix.target != 'linux-arm64'
+        if: matrix.target != 'linux-arm64' && matrix.target != 'darwin-x64'
+        shell: bash
         env:
           QMD_SILICONFLOW_API_KEY: ${{ secrets.QMD_SILICONFLOW_API_KEY }}
         run: |
-          ./${{ matrix.artifact }} --help
-          ./${{ matrix.artifact }} doctor 2>&1 || true
+          if [ "${{ matrix.target }}" = "windows-x64" ]; then
+            ./${{ matrix.artifact }}.exe --help
+          else
+            ./${{ matrix.artifact }} --help
+          fi
+          if [ "${{ matrix.target }}" = "windows-x64" ]; then
+            ./${{ matrix.artifact }}.exe doctor 2>&1 || true
+          else
+            ./${{ matrix.artifact }} doctor 2>&1 || true
+          fi
           echo "✅ Binary runs successfully"
 
       - name: Generate checksum
         shell: bash
         run: |
           set -euo pipefail
+          BIN="${{ matrix.artifact }}"
+          [ "${{ matrix.target }}" = "windows-x64" ] && BIN="${BIN}.exe"
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+            sha256sum "$BIN" > "${BIN}.sha256"
           else
-            shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+            shasum -a 256 "$BIN" > "${BIN}.sha256"
           fi
 
       - uses: actions/upload-artifact@v4
@@ -110,7 +130,7 @@ jobs:
           name: ${{ matrix.artifact }}
           path: |
             ${{ matrix.artifact }}
-            ${{ matrix.artifact }}.sha256
+            ${{ matrix.artifact }}.*
 
   publish-npm:
     name: Publish npm package
