@@ -416,6 +416,15 @@ function isSQLiteExtensionLoadingAllowed(): boolean {
   return Bun.env.QMD_ALLOW_SQLITE_EXTENSIONS === "1";
 }
 
+export function isVectorRuntimeAvailable(db: Database): boolean {
+  if (!isSQLiteExtensionLoadingAllowed()) return false;
+  try {
+    return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  } catch {
+    return false;
+  }
+}
+
 const _sqliteVecLoadedDbs = new WeakSet<Database>();
 
 function looksLikeSqliteVecNotFoundError(err: unknown): boolean {
@@ -423,6 +432,13 @@ function looksLikeSqliteVecNotFoundError(err: unknown): boolean {
   const msg = err.message || "";
   const m = msg.toLowerCase();
   return m.includes("sqlite-vec") && (m.includes("not found") || m.includes("unable") || m.includes("loadable") || m.includes("loadble"));
+}
+
+function looksLikeSqliteVecModuleMissingError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = (err.message || "").toLowerCase();
+  // Common sqlite error when a virtual table module (vec0) isn't available.
+  return msg.includes("no such module") && (msg.includes("vec0") || msg.includes("sqlite-vec"));
 }
 
 function setSQLiteFromBrewPrefixEnv(): void {
@@ -2349,7 +2365,25 @@ export function getHashesForEmbedding(db: Database): { hash: string; body: strin
  */
 export function clearAllEmbeddings(db: Database): void {
   db.exec(`DELETE FROM content_vectors`);
-  db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+
+  // When SQLite extensions are disabled, vectors_vec may be a vec0 virtual table.
+  // Dropping it can crash with "no such module: vec0"; skip the drop in that case.
+  if (!isSQLiteExtensionLoadingAllowed()) return;
+
+  try {
+    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+  } catch (err) {
+    if (looksLikeSqliteVecModuleMissingError(err)) {
+      // Best-effort cleanup: embeddings in content_vectors are cleared already.
+      // Keep the DB usable even if vec0 can't be loaded for this runtime.
+      console.warn(
+        "Warning: unable to drop vectors_vec because the sqlite-vec (vec0) module is unavailable. " +
+        "Set QMD_ALLOW_SQLITE_EXTENSIONS=1 (and ensure sqlite-vec is installed) to manage the vector index."
+      );
+      return;
+    }
+    throw err;
+  }
 }
 
 /**
@@ -2817,7 +2851,7 @@ export function getStatus(db: Database): IndexStatus {
 
   const totalDocs = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE active = 1`).get() as { c: number }).c;
   const needsEmbedding = getHashesNeedingEmbedding(db);
-  const hasVectors = isSQLiteExtensionLoadingAllowed() && !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  const hasVectors = isVectorRuntimeAvailable(db);
 
   return {
     totalDocuments: totalDocs,

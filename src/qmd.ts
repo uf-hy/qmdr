@@ -26,6 +26,7 @@ import {
   getHashesForEmbedding,
   clearAllEmbeddings,
   insertEmbedding,
+  isVectorRuntimeAvailable,
   getStatus,
   hashContent,
   extractTitle,
@@ -2399,9 +2400,17 @@ async function vectorSearch(query: string, opts: OutputOptions, model: string = 
     collectionName = opts.collection;
   }
 
-  const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
-  if (!tableExists) {
-    console.error("Vector index not found. Run 'qmd embed' first to create embeddings.");
+  const vecTableExists = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  const hasVectorRuntime = isVectorRuntimeAvailable(db);
+  if (!hasVectorRuntime) {
+    if (vecTableExists && process.env.QMD_ALLOW_SQLITE_EXTENSIONS !== "1") {
+      console.error(
+        "Vector index exists, but SQLite extensions are disabled. " +
+        "Set QMD_ALLOW_SQLITE_EXTENSIONS=1 to enable sqlite-vec and use vector search."
+      );
+    } else {
+      console.error("Vector index not found. Run 'qmd embed' first to create embeddings.");
+    }
     closeDb();
     return;
   }
@@ -2549,7 +2558,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
 
   // Run initial BM25 search (will be reused for retrieval)
   const initialFts = searchFTS(db, query, 20, collectionName as any);
-  let hasVectors = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  let hasVectors = isVectorRuntimeAvailable(db);
   if (_profile) { _timings.push({ step: "初始FTS", ms: Date.now() - _tStep, detail: `${initialFts.length} results` }); _tStep = Date.now(); }
 
   // Check if initial results have strong signals (skip expansion if so)
