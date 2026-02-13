@@ -13,7 +13,7 @@
 
 import { Database } from "bun:sqlite";
 import { Glob } from "bun";
-import { existsSync, realpathSync, readdirSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as sqliteVec from "sqlite-vec";
 import {
@@ -412,6 +412,35 @@ export function toVirtualPath(db: Database, absolutePath: string): string | null
 // Database initialization
 // =============================================================================
 
+function isSQLiteExtensionLoadingAllowed(): boolean {
+  return Bun.env.QMD_ALLOW_SQLITE_EXTENSIONS === "1";
+}
+
+export function isVectorRuntimeAvailable(db: Database): boolean {
+  if (!isSQLiteExtensionLoadingAllowed()) return false;
+  try {
+    return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  } catch {
+    return false;
+  }
+}
+
+const _sqliteVecLoadedDbs = new WeakSet<Database>();
+
+function looksLikeSqliteVecNotFoundError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message || "";
+  const m = msg.toLowerCase();
+  return m.includes("sqlite-vec") && (m.includes("not found") || m.includes("unable") || m.includes("loadable") || m.includes("loadble"));
+}
+
+function looksLikeSqliteVecModuleMissingError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = (err.message || "").toLowerCase();
+  // Common sqlite error when a virtual table module (vec0) isn't available.
+  return msg.includes("no such module") && (msg.includes("vec0") || msg.includes("sqlite-vec"));
+}
+
 function setSQLiteFromBrewPrefixEnv(): void {
   const candidates: string[] = [];
 
@@ -443,6 +472,12 @@ setSQLiteFromBrewPrefixEnv();
 function resolveSqliteVecFallbackPaths(): string[] {
   const candidates = new Set<string>();
 
+  if (!isSQLiteExtensionLoadingAllowed()) {
+    return [];
+  }
+
+  const ext = process.platform === "win32" ? "dll" : process.platform === "linux" ? "so" : "dylib";
+
   // Environment override for custom deployments.
   if (Bun.env.QMD_SQLITE_VEC_PATH) {
     candidates.add(Bun.env.QMD_SQLITE_VEC_PATH);
@@ -450,8 +485,8 @@ function resolveSqliteVecFallbackPaths(): string[] {
 
   // Homebrew common location.
   if (process.platform === "darwin") {
-    candidates.add("/opt/homebrew/lib/vec0.dylib");
-    candidates.add("/usr/local/lib/vec0.dylib");
+    candidates.add(`/opt/homebrew/lib/vec0.${ext}`);
+    candidates.add(`/usr/local/lib/vec0.${ext}`);
   }
 
   // Resolve from local node_modules, regardless of user home directory.
@@ -464,7 +499,7 @@ function resolveSqliteVecFallbackPaths(): string[] {
         : null;
 
   if (packageName) {
-    const localPath = join(process.cwd(), "node_modules", packageName, "vec0.dylib");
+    const localPath = join(process.cwd(), "node_modules", packageName, `vec0.${ext}`);
     candidates.add(localPath);
   }
 
@@ -474,7 +509,7 @@ function resolveSqliteVecFallbackPaths(): string[] {
     for (let i = 0; i < 8; i++) {
       if (!dir || dir === "/") break;
       if (packageName) {
-        candidates.add(join(dir, "node_modules", packageName, "vec0.dylib"));
+        candidates.add(join(dir, "node_modules", packageName, `vec0.${ext}`));
       }
       const parent = dirname(dir);
       if (parent === dir) break;
@@ -484,50 +519,48 @@ function resolveSqliteVecFallbackPaths(): string[] {
     // ignore
   }
 
-  // Also scan node_modules for any sqlite-vec-* package and prefer first existing candidate.
-  try {
-    const modulesDir = join(process.cwd(), "node_modules");
-    if (existsSync(modulesDir)) {
-      for (const entry of readdirSync(modulesDir)) {
-        if (entry.startsWith("sqlite-vec-")) {
-          candidates.add(join(modulesDir, entry, "vec0.dylib"));
-        }
-      }
-    }
-  } catch {
-    // ignore
-  }
-
   return [...candidates];
 }
 
-function initializeDatabase(db: Database): void {
+function loadSqliteVecExtension(db: Database): void {
+  if (_sqliteVecLoadedDbs.has(db)) return;
+  if (!isSQLiteExtensionLoadingAllowed()) return;
+
   try {
     sqliteVec.load(db);
+    _sqliteVecLoadedDbs.add(db);
+    return;
   } catch (err) {
     // Fallback for compiled binary: import.meta.url resolves to /$bunfs/root/
     // so sqlite-vec can't find the dynamic library. Try runtime-discovered paths.
-    if (err instanceof Error && err.message.includes("Loadble extension for sqlite-vec not found")) {
+    if (looksLikeSqliteVecNotFoundError(err)) {
       const fallbackPaths = resolveSqliteVecFallbackPaths();
-      let loaded = false;
       for (const p of fallbackPaths) {
         try {
           if (!existsSync(p)) continue;
-          db.loadExtension(p.replace(/\.dylib$/, ""));
-          loaded = true;
-          break;
+          db.loadExtension(p.replace(/\.(dylib|so|dll)$/i, ""));
+          _sqliteVecLoadedDbs.add(db);
+          return;
         } catch { /* try next */ }
       }
-      if (!loaded) throw err;
-    } else if (err instanceof Error && err.message.includes("does not support dynamic extension loading")) {
+      throw err;
+    }
+    if (err instanceof Error && err.message.includes("does not support dynamic extension loading")) {
       throw new Error(
         "SQLite build does not support dynamic extension loading. " +
         "Install Homebrew SQLite so the sqlite-vec extension can be loaded, " +
         "and set BREW_PREFIX if Homebrew is installed in a non-standard location."
       );
-    } else {
-      throw err;
     }
+    throw err;
+  }
+}
+
+function initializeDatabase(db: Database): void {
+  // Security: disable SQLite dynamic extension loading by default.
+  // Opt in with QMD_ALLOW_SQLITE_EXTENSIONS=1.
+  if (isSQLiteExtensionLoadingAllowed()) {
+    loadSqliteVecExtension(db);
   }
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
@@ -580,7 +613,20 @@ function initializeDatabase(db: Database): void {
   const hasSeqColumn = cvInfo.some(col => col.name === 'seq');
   if (cvInfo.length > 0 && !hasSeqColumn) {
     db.exec(`DROP TABLE IF EXISTS content_vectors`);
-    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+    if (isSQLiteExtensionLoadingAllowed()) {
+      try {
+        db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+      } catch (err) {
+        if (looksLikeSqliteVecModuleMissingError(err)) {
+          console.warn(
+            "Warning: unable to drop vectors_vec because the sqlite-vec (vec0) module is unavailable. " +
+            "Set QMD_ALLOW_SQLITE_EXTENSIONS=1 (and ensure sqlite-vec is installed) to manage the vector index."
+          );
+        } else {
+          throw err;
+        }
+      }
+    }
   }
   db.exec(`
     CREATE TABLE IF NOT EXISTS content_vectors (
@@ -646,6 +692,18 @@ function initializeDatabase(db: Database): void {
 
 
 function ensureVecTableInternal(db: Database, dimensions: number): void {
+  if (!isSQLiteExtensionLoadingAllowed()) {
+    throw new Error(
+      "Vector index requires sqlite-vec, but SQLite extensions are disabled. " +
+      "Set QMD_ALLOW_SQLITE_EXTENSIONS=1 to enable loading the sqlite-vec extension."
+    );
+  }
+
+  // Lazy-load sqlite-vec for callers that only need FTS/metadata.
+  if (!_sqliteVecLoadedDbs.has(db)) {
+    loadSqliteVecExtension(db);
+  }
+
   const tableInfo = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get() as { sql: string } | null;
   if (tableInfo) {
     const match = tableInfo.sql.match(/float\[(\d+)\]/);
@@ -1002,8 +1060,25 @@ export function getIndexHealth(db: Database): IndexHealthInfo {
 export function getCacheKey(url: string, body: object): string {
   const hash = new Bun.CryptoHasher("sha256");
   hash.update(url);
-  hash.update(JSON.stringify(body));
+  hash.update(stableStringify(body));
   return hash.digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  const normalize = (v: any): any => {
+    if (v === null || v === undefined) return v;
+    if (Array.isArray(v)) return v.map(normalize);
+    if (typeof v === "object") {
+      const out: Record<string, any> = {};
+      for (const k of Object.keys(v).sort()) {
+        out[k] = normalize(v[k]);
+      }
+      return out;
+    }
+    return v;
+  };
+
+  return JSON.stringify(normalize(value));
 }
 
 export function getCachedResult(db: Database, cacheKey: string): string | null {
@@ -1062,6 +1137,12 @@ export function cleanupOrphanedContent(db: Database): number {
  * Returns the number of orphaned embedding chunks deleted.
  */
 export function cleanupOrphanedVectors(db: Database): number {
+  // If extensions are disabled for this run, treat vector features as unavailable.
+  // A pre-existing vectors_vec table can't be safely queried/modified without vec0.
+  if (!isSQLiteExtensionLoadingAllowed()) {
+    return 0;
+  }
+
   // Check if vectors_vec table exists
   const tableExists = db.prepare(`
     SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'
@@ -1069,6 +1150,10 @@ export function cleanupOrphanedVectors(db: Database): number {
 
   if (!tableExists) {
     return 0;
+  }
+
+  if (!_sqliteVecLoadedDbs.has(db)) {
+    loadSqliteVecExtension(db);
   }
 
   // Count orphaned vectors first
@@ -1546,7 +1631,23 @@ export function findSimilarFiles(db: Database, query: string, maxDistance: numbe
     WHERE d.active = 1
   `).all() as { path: string }[];
   const queryLower = query.toLowerCase();
+
+  // Fast path: compare basenames first to reduce Levenshtein work.
+  const queryName = queryLower.split('/').pop() || queryLower;
+  const byName = allFiles
+    .map(f => {
+      const pLower = f.path.toLowerCase();
+      const name = pLower.split('/').pop() || pLower;
+      return { path: f.path, dist: levenshtein(name, queryName) };
+    })
+    .filter(f => f.dist <= maxDistance)
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, limit);
+  if (byName.length > 0) return byName.map(f => f.path);
+
+  // Fallback: full path compare, but only where length diff allows a match.
   const scored = allFiles
+    .filter(f => Math.abs(f.path.length - queryLower.length) <= maxDistance)
     .map(f => ({ path: f.path, dist: levenshtein(f.path.toLowerCase(), queryLower) }))
     .filter(f => f.dist <= maxDistance)
     .sort((a, b) => a.dist - b.dist)
@@ -2081,8 +2182,15 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
 // =============================================================================
 
 export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string, session?: ILLMSession): Promise<SearchResult[]> {
+  // Graceful degradation: if extensions are disabled, vector search is unavailable.
+  if (!isSQLiteExtensionLoadingAllowed()) return [];
+
   const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
   if (!tableExists) return [];
+
+  if (!_sqliteVecLoadedDbs.has(db)) {
+    loadSqliteVecExtension(db);
+  }
 
   const embedding = await getEmbedding(query, model, true, session);
   if (!embedding) return [];
@@ -2270,7 +2378,25 @@ export function getHashesForEmbedding(db: Database): { hash: string; body: strin
  */
 export function clearAllEmbeddings(db: Database): void {
   db.exec(`DELETE FROM content_vectors`);
-  db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+
+  // When SQLite extensions are disabled, vectors_vec may be a vec0 virtual table.
+  // Dropping it can crash with "no such module: vec0"; skip the drop in that case.
+  if (!isSQLiteExtensionLoadingAllowed()) return;
+
+  try {
+    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+  } catch (err) {
+    if (looksLikeSqliteVecModuleMissingError(err)) {
+      // Best-effort cleanup: embeddings in content_vectors are cleared already.
+      // Keep the DB usable even if vec0 can't be loaded for this runtime.
+      console.warn(
+        "Warning: unable to drop vectors_vec because the sqlite-vec (vec0) module is unavailable. " +
+        "Set QMD_ALLOW_SQLITE_EXTENSIONS=1 (and ensure sqlite-vec is installed) to manage the vector index."
+      );
+      return;
+    }
+    throw err;
+  }
 }
 
 /**
@@ -2738,7 +2864,7 @@ export function getStatus(db: Database): IndexStatus {
 
   const totalDocs = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE active = 1`).get() as { c: number }).c;
   const needsEmbedding = getHashesNeedingEmbedding(db);
-  const hasVectors = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  const hasVectors = isVectorRuntimeAvailable(db);
 
   return {
     totalDocuments: totalDocs,

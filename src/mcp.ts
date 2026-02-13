@@ -15,6 +15,7 @@ import {
   createStore,
   reciprocalRankFusion,
   extractSnippet,
+  isVectorRuntimeAvailable,
   DEFAULT_EMBED_MODEL,
   DEFAULT_QUERY_MODEL,
   DEFAULT_RERANK_MODEL,
@@ -314,10 +315,16 @@ You can also access documents directly via the \`qmd://\` URI scheme:
       },
     },
     async ({ query, limit, minScore, collection }) => {
-      const tableExists = store.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
-      if (!tableExists) {
+      const vecTableExists = !!store.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+      const hasVectorRuntime = isVectorRuntimeAvailable(store.db);
+      if (!hasVectorRuntime) {
         return {
-          content: [{ type: "text", text: "Vector index not found. Run 'qmd embed' first to create embeddings." }],
+          content: [{
+            type: "text",
+            text: vecTableExists && process.env.QMD_ALLOW_SQLITE_EXTENSIONS !== "1"
+              ? "Vector index exists, but SQLite extensions are disabled. Set QMD_ALLOW_SQLITE_EXTENSIONS=1 to enable sqlite-vec and use vector search."
+              : "Vector index not found. Run 'qmd embed' first to create embeddings.",
+          }],
           isError: true,
         };
       }
@@ -384,7 +391,7 @@ You can also access documents directly via the \`qmd://\` URI scheme:
       // Collect ranked lists (filter by collection after search)
       const rankedLists: RankedResult[][] = [];
       const docidMap = new Map<string, string>(); // filepath -> docid
-      const hasVectors = !!store.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+      const hasVectors = isVectorRuntimeAvailable(store.db);
 
       for (const q of queries) {
         const ftsResults = store.searchFTS(q, 20)

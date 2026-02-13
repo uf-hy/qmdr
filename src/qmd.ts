@@ -26,6 +26,7 @@ import {
   getHashesForEmbedding,
   clearAllEmbeddings,
   insertEmbedding,
+  isVectorRuntimeAvailable,
   getStatus,
   hashContent,
   extractTitle,
@@ -1524,8 +1525,35 @@ function collectionRename(oldName: string, newName: string): void {
 async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, collectionName?: string, suppressEmbedNotice: boolean = false): Promise<void> {
   const db = getDb();
   const resolvedPwd = pwd || getPwd();
+  const collectionRoot = getRealPath(resolvedPwd).replace(/\\/g, "/");
+  const collectionRootPrefix = collectionRoot.endsWith("/") ? collectionRoot : collectionRoot + "/";
   const now = new Date().toISOString();
   const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
+
+  const defaultMaxIndexBytes = 8 * 1024 * 1024;
+  const maxIndexBytesEnv = process.env.QMD_MAX_INDEX_FILE_BYTES;
+  let maxIndexBytes = Number.parseInt(maxIndexBytesEnv ?? "", 10);
+  if (!Number.isFinite(maxIndexBytes) || maxIndexBytes <= 0) {
+    maxIndexBytes = defaultMaxIndexBytes;
+  }
+
+  // macOS and Windows are typically case-insensitive; avoid false negatives when
+  // realpath casing differs from the collection root.
+  function shouldFoldPathCaseForRoot(root: string): boolean {
+    if (process.platform === "win32") return true;
+    if (process.platform !== "darwin") return false;
+
+    const idx = root.search(/[A-Za-z]/);
+    if (idx < 0) return false;
+
+    const ch = root[idx] as string;
+    const flipped = root.slice(0, idx) + (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()) + root.slice(idx + 1);
+    return getRealPath(flipped).replace(/\\/g, "/") === root;
+  }
+
+  const foldPathCase = shouldFoldPathCaseForRoot(collectionRoot);
+  const collectionRootCmp = foldPathCase ? collectionRoot.toLowerCase() : collectionRoot;
+  const collectionRootPrefixCmp = foldPathCase ? collectionRootPrefix.toLowerCase() : collectionRootPrefix;
 
   // Clear Ollama cache on index
   clearCache(db);
@@ -1540,7 +1568,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   progress.indeterminate();
   const glob = new Glob(globPattern);
   const files: string[] = [];
-  for await (const file of glob.scan({ cwd: resolvedPwd, onlyFiles: true, followSymlinks: true })) {
+  for await (const file of glob.scan({ cwd: resolvedPwd, onlyFiles: true, followSymlinks: false })) {
     // Skip node_modules, hidden folders (.*), and other common excludes
     const parts = file.split("/");
     const shouldSkip = parts.some(part =>
@@ -1565,9 +1593,21 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   const seenPaths = new Set<string>();
   const normalizedPathMap = new Map<string, string>();
   const startTime = Date.now();
+  let skippedSymlinkEscapes = 0;
+  let skippedTooLarge = 0;
+  let skippedBinary = 0;
+  let skippedUnreadable = 0;
 
   for (const relativeFile of files) {
-    const filepath = getRealPath(resolve(resolvedPwd, relativeFile));
+    const filepath = getRealPath(resolve(resolvedPwd, relativeFile)).replace(/\\/g, "/");
+    const filepathCmp = foldPathCase ? filepath.toLowerCase() : filepath;
+    if (!(filepathCmp === collectionRootCmp || filepathCmp.startsWith(collectionRootPrefixCmp))) {
+      skippedSymlinkEscapes++;
+      processed++;
+      progress.set((processed / total) * 100);
+      continue;
+    }
+
     const normalizedPath = handelize(relativeFile); // Normalize path for token-friendliness
     const existingOriginal = normalizedPathMap.get(normalizedPath);
     let path = normalizedPath;
@@ -1587,7 +1627,40 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     }
     seenPaths.add(path);
 
-    const content = readFileSync(filepath, "utf-8");
+    let stat: { size: number; mtime: Date; birthtime: Date } | null = null;
+    try {
+      stat = statSync(filepath);
+    } catch {
+      skippedUnreadable++;
+      processed++;
+      progress.set((processed / total) * 100);
+      continue;
+    }
+
+    if (stat.size > maxIndexBytes) {
+      skippedTooLarge++;
+      processed++;
+      progress.set((processed / total) * 100);
+      continue;
+    }
+
+    let content = "";
+    try {
+      const buf = readFileSync(filepath) as unknown as Uint8Array;
+      // Simple binary detection: skip files containing NUL byte.
+      if (buf.includes(0)) {
+        skippedBinary++;
+        processed++;
+        progress.set((processed / total) * 100);
+        continue;
+      }
+      content = new TextDecoder("utf-8", { fatal: true }).decode(buf);
+    } catch {
+      skippedUnreadable++;
+      processed++;
+      progress.set((processed / total) * 100);
+      continue;
+    }
 
     // Skip empty files - nothing useful to index
     if (!content.trim()) {
@@ -1613,7 +1686,6 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
       } else {
         // Content changed - insert new content hash and update document
         insertContent(db, hash, content, now);
-        const stat = statSync(filepath);
         updateDocument(db, existing.id, title, hash,
           stat ? new Date(stat.mtime).toISOString() : now);
         updated++;
@@ -1622,7 +1694,6 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
       // New document - insert content and document
       indexed++;
       insertContent(db, hash, content, now);
-      const stat = statSync(filepath);
       insertDocument(db, collectionName, path, title, hash,
         stat ? new Date(stat.birthtime).toISOString() : now,
         stat ? new Date(stat.mtime).toISOString() : now);
@@ -1655,6 +1726,18 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
 
   progress.clear();
   console.log(`\nIndexed: ${indexed} new, ${updated} updated, ${unchanged} unchanged, ${removed} removed`);
+  if (skippedSymlinkEscapes > 0) {
+    console.log(`${c.dim}Skipped ${skippedSymlinkEscapes} symlink-escaped file(s) outside collection root.${c.reset}`);
+  }
+  if (skippedTooLarge > 0) {
+    console.log(`${c.dim}Skipped ${skippedTooLarge} file(s) larger than ${maxIndexBytes} bytes.${c.reset}`);
+  }
+  if (skippedBinary > 0) {
+    console.log(`${c.dim}Skipped ${skippedBinary} binary file(s).${c.reset}`);
+  }
+  if (skippedUnreadable > 0) {
+    console.log(`${c.dim}Skipped ${skippedUnreadable} unreadable/invalid-utf8 file(s).${c.reset}`);
+  }
   if (orphanedContent > 0) {
     console.log(`Cleaned up ${orphanedContent} orphaned content hash(es)`);
   }
@@ -2317,9 +2400,17 @@ async function vectorSearch(query: string, opts: OutputOptions, model: string = 
     collectionName = opts.collection;
   }
 
-  const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
-  if (!tableExists) {
-    console.error("Vector index not found. Run 'qmd embed' first to create embeddings.");
+  const vecTableExists = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  const hasVectorRuntime = isVectorRuntimeAvailable(db);
+  if (!hasVectorRuntime) {
+    if (vecTableExists && process.env.QMD_ALLOW_SQLITE_EXTENSIONS !== "1") {
+      console.error(
+        "Vector index exists, but SQLite extensions are disabled. " +
+        "Set QMD_ALLOW_SQLITE_EXTENSIONS=1 to enable sqlite-vec and use vector search."
+      );
+    } else {
+      console.error("Vector index not found. Run 'qmd embed' first to create embeddings.");
+    }
     closeDb();
     return;
   }
@@ -2467,7 +2558,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
 
   // Run initial BM25 search (will be reused for retrieval)
   const initialFts = searchFTS(db, query, 20, collectionName as any);
-  let hasVectors = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  let hasVectors = isVectorRuntimeAvailable(db);
   if (_profile) { _timings.push({ step: "初始FTS", ms: Date.now() - _tStep, detail: `${initialFts.length} results` }); _tStep = Date.now(); }
 
   // Check if initial results have strong signals (skip expansion if so)
