@@ -3,6 +3,6 @@
   "provider": "openai",
   "model": {
     "id": "gpt-5.2-codex",
-    "reasoningEffort": "high"
+    "reasoningEffort": "xhigh"
   }
 }
