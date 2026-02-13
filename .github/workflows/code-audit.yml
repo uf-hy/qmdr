@@ -1,0 +1,49 @@
+name: Full Code Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      focus:
+        description: '审计重点（留空=全面审计）'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run OpenCode Audit
+        uses: anomalyco/opencode/github@latest
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: openai/gpt-5.2-codex
+          use_github_token: true
+          prompt: |
+            You are a senior code auditor. Perform a thorough audit of this entire repository.
+
+            Focus areas:
+            1. Security vulnerabilities (injection, credential leaks, unsafe eval, path traversal)
+            2. Bug risks (race conditions, unhandled errors, edge cases, null/undefined)
+            3. Performance issues (memory leaks, O(n²) loops, unnecessary allocations)
+            4. Code quality (dead code, duplicated logic, missing error handling)
+            ${{ github.event.inputs.focus != '' && format('5. Special focus: {0}', github.event.inputs.focus) || '' }}
+
+            Read all source files in src/ directory. For each issue found:
+            - Severity: 🔴 Critical / 🟡 Warning / 🔵 Info
+            - File and line number
+            - Description and suggested fix
+
+            After analysis, create a GitHub issue titled "🔍 Code Audit Report - [date]" with your findings organized by severity.
+            Write the report in Chinese.
