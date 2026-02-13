@@ -78,6 +78,7 @@ jobs:
       QMD_RERANK_MODE: llm
       QMD_CONFIG_DIR: /tmp/qmdr-ci-config
       XDG_CACHE_HOME: /tmp/qmdr-ci-cache
+        QMD_ALLOW_SQLITE_EXTENSIONS: "1"
 
     steps:
       - name: Check integration prerequisites

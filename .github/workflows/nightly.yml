@@ -25,6 +25,7 @@ jobs:
       QMD_RERANK_MODE: llm
       QMD_CONFIG_DIR: /tmp/qmdr-nightly-config
       XDG_CACHE_HOME: /tmp/qmdr-nightly-cache
+      QMD_ALLOW_SQLITE_EXTENSIONS: "1"
       QMD_CI_LOG_DIR: /tmp/qmdr-ci-logs
 
     steps:
