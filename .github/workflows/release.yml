@@ -160,7 +160,15 @@ jobs:
           else
             echo "NPM_TOKEN not set, attempting npm trusted publishing via OIDC"
           fi
-          npm publish --access public --provenance
+          npm publish --access public --provenance || {
+            rc=$?
+            # Version already exists (409/403) is not a fatal error on re-run
+            if npm view qmdr version 2>/dev/null | grep -q "$(node -p 'require("./package.json").version')"; then
+              echo "⚠️ Version already published, skipping npm publish"
+              exit 0
+            fi
+            exit $rc
+          }
 
   release:
     name: Create GitHub Release
