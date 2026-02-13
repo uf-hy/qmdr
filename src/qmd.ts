@@ -2725,17 +2725,14 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     // });
 
     if (_profile) {
-      _timings.push({ step: "Score + Sort", ms: Date.now() - _tStep, detail: `${finalResults.length} final results` });
+      _timings.push({ step: "Score+Sort", ms: Date.now() - _tStep, detail: `${finalResults.length} results` });
       const totalMs = Date.now() - _t0;
-      process.stderr.write(`\n${c.cyan}${c.bold}┌─ Profile ─────────────────────────────────────────┐${c.reset}\n`);
+      process.stderr.write(`\n${c.dim}step\tms\t%\tdetail${c.reset}\n`);
       for (const t of _timings) {
         const pct = Math.round(t.ms / totalMs * 100);
-        const bar = "█".repeat(Math.max(1, Math.round(pct / 3))) + "░".repeat(Math.max(0, 33 - Math.round(pct / 3)));
-        process.stderr.write(`${c.cyan}│${c.reset} ${t.step.padEnd(22)} ${String(t.ms).padStart(6)}ms ${String(pct).padStart(3)}% ${bar} ${c.dim}${t.detail || ""}${c.reset}\n`);
+        process.stderr.write(`${t.step}\t${t.ms}\t${pct}%\t${t.detail || ""}\n`);
       }
-      process.stderr.write(`${c.cyan}│${c.reset}${"─".repeat(52)}\n`);
-      process.stderr.write(`${c.cyan}│${c.reset} ${"Total".padEnd(22)} ${String(totalMs).padStart(6)}ms\n`);
-      process.stderr.write(`${c.cyan}${c.bold}└───────────────────────────────────────────────────┘${c.reset}\n`);
+      process.stderr.write(`${c.bold}total\t${totalMs}\t100%${c.reset}\n`);
     }
 
     closeDb();
