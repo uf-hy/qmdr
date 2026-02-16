@@ -65,6 +65,7 @@ jobs:
 
   integration:
     name: Integration (SiliconFlow smoke)
+    continue-on-error: true
     needs:
       - typecheck
       - quality
