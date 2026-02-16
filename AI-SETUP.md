@@ -94,6 +94,35 @@ QMD_RERANK_MODE=rerank
 
 > Bailian's qwen3-rerank uses a dedicated rerank API (`/compatible-api/v1/reranks`), not the OpenAI-compatible chat endpoint. QMDR handles this automatically when `QMD_RERANK_PROVIDER=dashscope`. Combine with SiliconFlow for embedding + query expansion.
 
+### Cost Estimation (Dynamic)
+
+Step 1: Calculate your daily tokens
+
+Memory - how to calculate:
+- Count characters in your memory/*.md files
+- tokens = characters ÷ 1.74 (Chinese text approximate ratio)
+- Or use tiktoken for exact count
+
+Sessions - how to calculate:
+- Check your session files in ~/.openclaw/agents/*/sessions/
+- Estimate similarly, or reference: ~360K tokens/day
+
+Step 2: Calculate years with ¥14 credit
+
+Formula: 
+- Years = (14 ÷ price_per_M) × 1,000,000 ÷ daily_tokens
+- Free models (bge-large-zh-v1.5, bge-m3): unlimited
+
+Example - if your memory = 5K tokens/day:
+- Qwen3-Embedding-0.6B (¥0.07/M): (14 ÷ 0.07) × 1M ÷ 5,000 = 40,000 days ≈ 110 years
+- Qwen3-Embedding-4B (¥0.14/M): (14 ÷ 0.14) × 1M ÷ 5,000 = 20,000 days ≈ 55 years
+- Free models: unlimited
+
+Example - if memory + sessions = 360K tokens/day:
+- Qwen3-Embedding-0.6B: (14 ÷ 0.07) × 1M ÷ 360,000 = 555 days ≈ 1.5 years
+- Qwen3-Embedding-4B: (14 ÷ 0.14) × 1M ÷ 360,000 = 277 days ≈ 0.8 years
+- Free models: unlimited
+
 ### Reranking: two modes
 
 QMDR supports two reranking strategies:
@@ -166,6 +195,8 @@ qmd query "test" -c memory  # empty result = no .md files in path
 Never use `"bun /path/to/qmd.ts"` — bun misparses subcommands.
 
 **Sessions indexing** — `"sessions": { "enabled": true }` exports your AI conversation history as markdown files and indexes them. This means QMDR can search through past conversations, decisions, and context — not just your static markdown files. Highly recommended for personal knowledge retrieval.
+
+Cost tip: Sessions generate ~300-400K tokens/day. With free models (bge-large-zh-v1.5, bge-m3), cost is ¥0. Or use ¥14 credit: ~0.4-1.5 years depending on model tier.
 
 Env keys: `~/.config/qmd/.env` auto-loaded (recommended). Or add to launchd/systemd. Process env > .env.
 

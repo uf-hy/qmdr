@@ -1772,7 +1772,8 @@ describe("Integration", () => {
 // LlamaCpp Integration Tests (using real local models)
 // =============================================================================
 
-describe("LlamaCpp Integration", () => {
+// Skip LlamaCpp tests in CI (no GPU, models timeout)
+describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
   test("searchVec returns empty when no vector index", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection();
