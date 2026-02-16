@@ -1007,6 +1007,33 @@ export type RemoteLLMConfig = {
   };
 };
 
+/**
+ * Fetch with exponential backoff retry for rate-limited APIs (403/429).
+ * Retries up to `maxRetries` times with exponential delay + jitter.
+ */
+async function fetchWithRetry(
+  input: string | URL | Request,
+  init?: RequestInit,
+  maxRetries = 3,
+  baseDelayMs = 2000,
+): Promise<Response> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const resp = await fetch(input, init);
+    if (resp.ok || attempt === maxRetries) return resp;
+    // Only retry on rate limit errors
+    if (resp.status !== 429 && resp.status !== 403) return resp;
+    const body = await resp.clone().text().catch(() => "");
+    if (resp.status === 403 && !body.toLowerCase().includes("rate") && !body.toLowerCase().includes("rpm") && !body.toLowerCase().includes("limit")) {
+      return resp; // Not a rate limit 403, don't retry
+    }
+    const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000;
+    process.stderr.write(`Rate limited (${resp.status}), retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxRetries})...\n`);
+    await new Promise(r => setTimeout(r, delay));
+  }
+  // unreachable, but TypeScript needs it
+  return fetch(input, init);
+}
+
 export class RemoteLLM implements LLM {
   private readonly config: RemoteLLMConfig;
 
@@ -1101,7 +1128,7 @@ export class RemoteLLM implements LLM {
     const model = sf.embedModel || "Qwen/Qwen3-Embedding-8B";
 
     try {
-      const resp = await fetch(`${baseUrl}/embeddings`, {
+      const resp = await fetchWithRetry(`${baseUrl}/embeddings`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${sf.apiKey}`,
@@ -1162,7 +1189,7 @@ export class RemoteLLM implements LLM {
     for (let i = 0; i < texts.length; i += BATCH_SIZE) {
       const batch = texts.slice(i, i + BATCH_SIZE);
       try {
-        const resp = await fetch(`${baseUrl}/embeddings`, {
+        const resp = await fetchWithRetry(`${baseUrl}/embeddings`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${sf.apiKey}`,
@@ -1229,7 +1256,7 @@ export class RemoteLLM implements LLM {
     ].join("\n");
 
     try {
-      const resp = await fetch(`${baseUrl}/chat/completions`, {
+      const resp = await fetchWithRetry(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${sf.apiKey}`,
@@ -1350,7 +1377,7 @@ export class RemoteLLM implements LLM {
     const baseUrl = (sf.baseUrl || "https://api.siliconflow.cn/v1").replace(/\/$/, "");
     const model = options.model || sf.model || "BAAI/bge-reranker-v2-m3";
 
-    const resp = await fetch(`${baseUrl}/rerank`, {
+    const resp = await fetchWithRetry(`${baseUrl}/rerank`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${sf.apiKey}`,
