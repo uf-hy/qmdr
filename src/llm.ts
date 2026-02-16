@@ -1015,7 +1015,7 @@ async function fetchWithRetry(
   input: string | URL | Request,
   init?: RequestInit,
   maxRetries = 3,
-  baseDelayMs = 2000,
+  baseDelayMs = 20000,
 ): Promise<Response> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const resp = await fetch(input, init);
@@ -1431,7 +1431,7 @@ export class RemoteLLM implements LLM {
     const baseUrl = (ds.baseUrl || "https://dashscope.aliyuncs.com/compatible-api/v1").replace(/\/$/, "");
     const model = options.model || ds.model || "qwen3-rerank";
 
-    const resp = await fetch(`${baseUrl}/reranks`, {
+    const resp = await fetchWithRetry(`${baseUrl}/reranks`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${ds.apiKey}`,
@@ -1625,7 +1625,7 @@ export class RemoteLLM implements LLM {
       "[3] 另一篇的核心内容",
     ].join("\n");
 
-    const resp = await fetch(`${baseUrl}/chat/completions`, {
+    const resp = await fetchWithRetry(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${oa.apiKey}`,
@@ -1679,7 +1679,7 @@ export class RemoteLLM implements LLM {
     const baseUrl = (oa.baseUrl || "https://api.openai.com/v1").replace(/\/$/, "");
     const model = options?.model || oa.embedModel || "text-embedding-3-small";
 
-    const resp = await fetch(`${baseUrl}/embeddings`, {
+    const resp = await fetchWithRetry(`${baseUrl}/embeddings`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${oa.apiKey}`,
@@ -1716,7 +1716,7 @@ export class RemoteLLM implements LLM {
     for (let i = 0; i < texts.length; i += BATCH_SIZE) {
       const batch = texts.slice(i, i + BATCH_SIZE);
       try {
-        const resp = await fetch(`${baseUrl}/embeddings`, {
+        const resp = await fetchWithRetry(`${baseUrl}/embeddings`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${oa.apiKey}`,
@@ -1769,7 +1769,7 @@ export class RemoteLLM implements LLM {
     ].join("\n");
 
     try {
-      const resp = await fetch(`${baseUrl}/chat/completions`, {
+      const resp = await fetchWithRetry(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${oa.apiKey}`,
