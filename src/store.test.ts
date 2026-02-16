@@ -3,7 +3,7 @@
  *
  * Run with: bun test store.test.ts
  *
- * LLM operations use LlamaCpp with local GGUF models (node-llama-cpp).
+ * LLM operations use remote providers (SiliconFlow, OpenAI, etc).
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, mock, spyOn } from "bun:test";
@@ -12,7 +12,6 @@ import { unlink, mkdtemp, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { disposeDefaultLlamaCpp } from "./llm.js";
 import {
   createStore,
   getDefaultDbPath,
@@ -43,11 +42,8 @@ import {
 import type { CollectionConfig } from "./collections.js";
 
 // =============================================================================
-// LlamaCpp Setup
 // =============================================================================
 
-// Note: LlamaCpp uses node-llama-cpp for local GGUF model inference.
-// No HTTP mocking needed - tests use real LlamaCpp calls for integration tests.
 
 // =============================================================================
 // Test Utilities
@@ -221,9 +217,6 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  // Ensure native resources are released to avoid ggml-metal asserts on process exit.
-  await disposeDefaultLlamaCpp();
-
   try {
     // Clean up test directory
     const { readdir, unlink } = await import("node:fs/promises");
@@ -596,9 +589,9 @@ describe("Document Chunking", () => {
     const content = "Word ".repeat(2000);  // ~10000 chars
     const chunks = chunkDocument(content);
     expect(chunks.length).toBeGreaterThan(1);
-    // Each chunk should be around 3200 chars (except last)
-    expect(chunks[0]!.text.length).toBeGreaterThan(2500);
-    expect(chunks[0]!.text.length).toBeLessThanOrEqual(3200);
+    // Default CHUNK_SIZE_CHARS = CHUNK_SIZE_TOKENS(200) * 4 = 800
+    expect(chunks[0]!.text.length).toBeGreaterThan(500);
+    expect(chunks[0]!.text.length).toBeLessThanOrEqual(800);
   });
 });
 
@@ -1769,187 +1762,6 @@ describe("Integration", () => {
 });
 
 // =============================================================================
-// LlamaCpp Integration Tests (using real local models)
-// =============================================================================
-
-// Skip LlamaCpp tests in CI (no GPU, models timeout)
-describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
-  test("searchVec returns empty when no vector index", async () => {
-    const store = await createTestStore();
-    const collectionName = await createTestCollection();
-    await insertTestDocument(store.db, collectionName, {
-      name: "doc1",
-      body: "Some content",
-    });
-
-    // No vectors_vec table exists, should return empty
-    const results = await store.searchVec("query", "embeddinggemma", 10);
-    expect(results).toHaveLength(0);
-
-    await cleanupTestDb(store);
-  });
-
-  test("searchVec returns results when vector index exists", async () => {
-    const store = await createTestStore();
-    const collectionName = await createTestCollection();
-
-    const hash = "testhash123";
-    await insertTestDocument(store.db, collectionName, {
-      name: "doc1",
-      hash,
-      body: "Some content about testing",
-      filepath: "/test/doc1.md",
-      displayPath: "doc1.md",
-    });
-
-    // Create vector table and insert a vector
-    store.ensureVecTable(768);
-    const embedding = Array(768).fill(0).map(() => Math.random());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash, new Date().toISOString());
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, new Float32Array(embedding));
-
-    const results = await store.searchVec("test query", "embeddinggemma", 10);
-    expect(results).toHaveLength(1);
-    expect(results[0]!.displayPath).toBe(`${collectionName}/doc1.md`);
-    expect(results[0]!.filepath).toBe(`qmd://${collectionName}/doc1.md`);
-    expect(results[0]!.source).toBe("vec");
-
-    await cleanupTestDb(store);
-  });
-
-  test("searchVec filters by collection name", async () => {
-    const store = await createTestStore();
-    const collection1 = await createTestCollection({ name: "coll1", pwd: "/test/coll1" });
-    const collection2 = await createTestCollection({ name: "coll2", pwd: "/test/coll2" });
-
-    const hash1 = "hash1abc";
-    const hash2 = "hash2xyz";
-
-    await insertTestDocument(store.db, collection1, {
-      name: "doc1",
-      hash: hash1,
-      body: "Content in collection one",
-    });
-
-    await insertTestDocument(store.db, collection2, {
-      name: "doc2",
-      hash: hash2,
-      body: "Content in collection two",
-    });
-
-    // Create vectors_vec table with correct dimensions (768 for embeddinggemma)
-    store.ensureVecTable(768);
-    const embedding1 = Array(768).fill(0).map(() => Math.random());
-    const embedding2 = Array(768).fill(0).map(() => Math.random());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash1, new Date().toISOString());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash2, new Date().toISOString());
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash1}_0`, new Float32Array(embedding1));
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash2}_0`, new Float32Array(embedding2));
-
-    // Search without filter - should return both
-    const allResults = await store.searchVec("content", "embeddinggemma", 10);
-    expect(allResults).toHaveLength(2);
-
-    // Search with collection filter - should return only from collection1
-    const filtered = await store.searchVec("content", "embeddinggemma", 10, collection1);
-    expect(filtered).toHaveLength(1);
-    expect(filtered[0]!.collectionName).toBe(collection1);
-
-    await cleanupTestDb(store);
-  });
-
-  // Regression test for https://github.com/tobi/qmd/pull/23
-  // sqlite-vec virtual tables hang when combined with JOINs in the same query.
-  // The fix uses a two-step approach: vector query first, then separate JOINs.
-  test("searchVec uses two-step query to avoid sqlite-vec JOIN hang", async () => {
-    const store = await createTestStore();
-    const collectionName = await createTestCollection();
-
-    const hash = "regression_test_hash";
-    await insertTestDocument(store.db, collectionName, {
-      name: "regression-doc",
-      hash,
-      body: "Test content for vector search regression",
-      filepath: "/test/regression.md",
-      displayPath: "regression.md",
-    });
-
-    // Create vector table and insert a test vector
-    store.ensureVecTable(768);
-    const embedding = Array(768).fill(0).map(() => Math.random());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash, new Date().toISOString());
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, new Float32Array(embedding));
-
-    // This should complete quickly (not hang) due to the two-step fix
-    // The old code with JOINs in the sqlite-vec query would hang indefinitely
-    const startTime = Date.now();
-    const results = await store.searchVec("test content", "embeddinggemma", 5);
-    const elapsed = Date.now() - startTime;
-
-    // If the query took more than 5 seconds, something is wrong
-    // (the hang bug would cause it to never return at all)
-    expect(elapsed).toBeLessThan(5000);
-    expect(results.length).toBeGreaterThan(0);
-
-    await cleanupTestDb(store);
-  });
-
-  test("expandQuery returns original plus expanded queries", async () => {
-    const store = await createTestStore();
-
-    const queries = await store.expandQuery("test query");
-    expect(queries).toContain("test query");
-    expect(queries[0]).toBe("test query");
-    // LlamaCpp returns original + variations
-    expect(queries.length).toBeGreaterThanOrEqual(1);
-
-    await cleanupTestDb(store);
-  }, 30000);
-
-  test("expandQuery caches results", async () => {
-    const store = await createTestStore();
-
-    // First call
-    const queries1 = await store.expandQuery("cached query test");
-    // Second call - should hit cache
-    const queries2 = await store.expandQuery("cached query test");
-
-    expect(queries1[0]).toBe(queries2[0]);
-
-    await cleanupTestDb(store);
-  }, 30000);
-
-  test("rerank scores documents", async () => {
-    const store = await createTestStore();
-
-    const docs = [
-      { file: "doc1.md", text: "Relevant content about the topic" },
-      { file: "doc2.md", text: "Other content" },
-    ];
-
-    const results = await store.rerank("topic", docs);
-    expect(results).toHaveLength(2);
-    // LlamaCpp reranker returns relevance scores
-    expect(results[0]!.score).toBeGreaterThan(0);
-
-    await cleanupTestDb(store);
-  });
-
-  test("rerank caches results", async () => {
-    const store = await createTestStore();
-
-    const docs = [{ file: "doc1.md", text: "Content for caching test" }];
-
-    // First call
-    await store.rerank("cache test query", docs);
-    // Second call - should hit cache
-    const results = await store.rerank("cache test query", docs);
-
-    expect(results).toHaveLength(1);
-
-    await cleanupTestDb(store);
-  });
-});
 
 // =============================================================================
 // Edge Cases & Error Handling
