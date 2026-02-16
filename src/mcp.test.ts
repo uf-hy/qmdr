@@ -6,6 +6,10 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
+
+// Skip tests requiring remote API in CI
+const skipRemoteAPI = !!process.env.CI;
+
 import { Database } from "bun:sqlite";
 import * as sqliteVec from "sqlite-vec";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -294,7 +298,7 @@ describe("MCP Server", () => {
   // Tool: qmd_vsearch (Vector)
   // ===========================================================================
 
-  describe("qmd_vsearch tool", () => {
+  describe.skipIf(skipRemoteAPI)("qmd_vsearch tool", () => {
     test("returns results for semantic query", async () => {
       const results = await searchVec(testDb, "project documentation", DEFAULT_EMBED_MODEL, 10);
       expect(results.length).toBeGreaterThan(0);
@@ -320,7 +324,7 @@ describe("MCP Server", () => {
   // Tool: qmd_query (Hybrid)
   // ===========================================================================
 
-  describe("qmd_query tool", () => {
+  describe.skipIf(skipRemoteAPI)("qmd_query tool", () => {
     test("expands query with variations", async () => {
       const queries = await expandQuery("api documentation", DEFAULT_QUERY_MODEL, testDb);
       // Always returns at least the original query, may have more if generation succeeds
