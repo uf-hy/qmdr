@@ -1014,18 +1014,14 @@ export type RemoteLLMConfig = {
 async function fetchWithRetry(
   input: string | URL | Request,
   init?: RequestInit,
-  maxRetries = 3,
-  baseDelayMs = 20000,
+  maxRetries = 2,
+  baseDelayMs = 3000,
 ): Promise<Response> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const resp = await fetch(input, init);
     if (resp.ok || attempt === maxRetries) return resp;
-    // Only retry on rate limit errors
-    if (resp.status !== 429 && resp.status !== 403) return resp;
-    const body = await resp.clone().text().catch(() => "");
-    if (resp.status === 403 && !body.toLowerCase().includes("rate") && !body.toLowerCase().includes("rpm") && !body.toLowerCase().includes("limit")) {
-      return resp; // Not a rate limit 403, don't retry
-    }
+    // Only retry on rate limit errors (429), not auth-required 403
+    if (resp.status !== 429) return resp;
     const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000;
     process.stderr.write(`Rate limited (${resp.status}), retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxRetries})...\n`);
     await new Promise(r => setTimeout(r, delay));
