@@ -1530,7 +1530,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   const now = new Date().toISOString();
   const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
 
-  const defaultMaxIndexBytes = 8 * 1024 * 1024;
+  const defaultMaxIndexBytes = 64 * 1024 * 1024;
   const maxIndexBytesEnv = process.env.QMD_MAX_INDEX_FILE_BYTES;
   let maxIndexBytes = Number.parseInt(maxIndexBytesEnv ?? "", 10);
   if (!Number.isFinite(maxIndexBytes) || maxIndexBytes <= 0) {

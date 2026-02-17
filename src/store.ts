@@ -413,7 +413,9 @@ export function toVirtualPath(db: Database, absolutePath: string): string | null
 // =============================================================================
 
 function isSQLiteExtensionLoadingAllowed(): boolean {
-  return Bun.env.QMD_ALLOW_SQLITE_EXTENSIONS === "1";
+  // Always allow — sqlite-vec is a bundled dependency, not an untrusted extension.
+  // QMD_ALLOW_SQLITE_EXTENSIONS=0 can explicitly disable if needed.
+  return Bun.env.QMD_ALLOW_SQLITE_EXTENSIONS !== "0";
 }
 
 export function isVectorRuntimeAvailable(db: Database): boolean {
