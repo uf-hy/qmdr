@@ -8,7 +8,7 @@
   },
   "scripts": {
     "test": "bun test",
-    "test:ci": "bun test src/store-paths.test.ts src/cli.test.ts",
+    "test:ci": "bun test src/store-paths.test.ts src/cli.test.ts src/store-collection-filter.test.ts",
     "test:heavy": "bun test src/store.test.ts src/llm.test.ts src/mcp.test.ts src/eval.test.ts",
     "test:full": "bun test",
     "typecheck": "tsc --noEmit",
