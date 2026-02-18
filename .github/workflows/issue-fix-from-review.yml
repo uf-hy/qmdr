@@ -115,6 +115,22 @@ jobs:
           git pull --rebase origin "${{ steps.parse.outputs.head_ref }}" || true
           git push origin HEAD:"${{ steps.parse.outputs.head_ref }}"
 
+      - name: Trigger PR feedbacker (/opencode)
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = Number('${{ steps.parse.outputs.pr_number }}');
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: prNumber,
+              body: '/opencode',
+            });
+
       - name: Notify issue
         if: ${{ always() }}
         uses: actions/github-script@v7
@@ -131,5 +147,5 @@ jobs:
               owner,
               repo,
               issue_number: issueNumber,
-              body: `#AI_PR_FIX_RESULT\nPR: ${prNumber}\nROUND: ${round}/5\nSTATUS: ${context.job}\n\nI pushed fixes (or found no changes). PR will re-run review automatically.`
+              body: `#AI_PR_FIX_RESULT\nPR: ${prNumber}\nROUND: ${round}/5\nSTATUS: done\n\nI pushed fixes (or found no changes). I also commented /opencode on the PR to trigger the feedbacker.`
             });
