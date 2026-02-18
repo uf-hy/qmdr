@@ -137,25 +137,43 @@ export async function pullModels(
     };
 
     let remoteEtag: string | null = null;
+    let remoteEtagFetched = false;
+    const fetchRemoteEtagOnce = async (): Promise<string | null> => {
+      if (remoteEtagFetched) return remoteEtag;
+      remoteEtagFetched = true;
+      remoteEtag = hfRef ? await getRemoteEtag(hfRef) : null;
+      return remoteEtag;
+    };
+
     if (hfRef && filename) {
       const etagPath = join(cacheDir, `${filename}.etag`);
       const pathMapPath = join(cacheDir, `${filename}.path`);
-      remoteEtag = await getRemoteEtag(hfRef);
 
       const localEtag = existsSync(etagPath) ? readFileSync(etagPath, "utf-8").trim() : null;
       const mappedPath = existsSync(pathMapPath) ? readFileSync(pathMapPath, "utf-8").trim() : null;
+      const basenamePath = join(cacheDir, filename);
+      const hasLocalModel =
+        (mappedPath ? existsSync(mappedPath) : false) || (basenamePath ? existsSync(basenamePath) : false);
 
       // Keep local cache when remote ETag cannot be fetched (offline/HEAD blocked).
-      const shouldRefresh =
-        options.refresh === true || (remoteEtag !== null && localEtag !== null && remoteEtag !== localEtag);
+      // Only refresh when explicitly requested, or when we can *confirm* the remote changed.
+      let shouldRefresh = options.refresh === true;
+      if (!shouldRefresh && hasLocalModel && localEtag !== null) {
+        const etag = await fetchRemoteEtagOnce();
+        shouldRefresh = etag !== null && etag !== localEtag;
+      }
 
       if (shouldRefresh) {
         // Delete only confirmed local files; do not call resolveModelFile() here (may download).
         if (deleteCandidate(mappedPath)) refreshed = true;
 
         // Back-compat: if cache uses URI basename, delete it too.
-        if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
+        if (deleteCandidate(basenamePath)) refreshed = true;
 
+        if (existsSync(etagPath)) unlinkSync(etagPath);
+        if (existsSync(pathMapPath)) unlinkSync(pathMapPath);
+      } else if (!hasLocalModel) {
+        // If the model file is missing but metadata exists, clear it so we can re-establish mapping.
         if (existsSync(etagPath)) unlinkSync(etagPath);
         if (existsSync(pathMapPath)) unlinkSync(pathMapPath);
       }
@@ -168,9 +186,10 @@ export async function pullModels(
     if (hfRef && filename) {
       const pathMapPath = join(cacheDir, `${filename}.path`);
       writeFileSync(pathMapPath, path + "\n", "utf-8");
-      if (remoteEtag) {
+      const etag = await fetchRemoteEtagOnce();
+      if (etag) {
         const etagPath = join(cacheDir, `${filename}.etag`);
-        writeFileSync(etagPath, remoteEtag + "\n", "utf-8");
+        writeFileSync(etagPath, etag + "\n", "utf-8");
       }
     }
     results.push({ model, path, sizeBytes, refreshed });
