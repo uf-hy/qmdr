@@ -139,6 +139,7 @@ export async function pullModels(
     let remoteEtag: string | null = null;
     let shouldCleanup = false;
     let deletedAnyModelFile = false;
+    let hadAnyModelFileCandidate = false;
 
     const deleteCandidate = (candidate: string | null | undefined): boolean => {
       if (!candidate) return false;
@@ -149,17 +150,49 @@ export async function pullModels(
       return safeUnlink(abs);
     };
 
+    const isCandidateFile = (candidate: string | null | undefined): boolean => {
+      if (!candidate) return false;
+      const abs = resolve(candidate);
+      const absCache = resolve(cacheDir) + sep;
+      if (!abs.startsWith(absCache)) return false;
+      try {
+        return statSync(abs).isFile();
+      } catch {
+        return false;
+      }
+    };
+
     if (hfRef && filename) {
       const etagPath = join(cacheDir, `${filename}.etag`);
       const pathMetaPath = join(cacheDir, `${filename}.path`);
       remoteEtag = await getRemoteEtag(hfRef);
       const localEtag = existsSync(etagPath) ? readFileSync(etagPath, "utf-8").trim() : null;
-      shouldCleanup = options.refresh === true || (remoteEtag !== null && remoteEtag !== localEtag);
+      const recordedPath = existsSync(pathMetaPath)
+        ? readFileSync(pathMetaPath, "utf-8").trim() || null
+        : null;
+
+      hadAnyModelFileCandidate = isCandidateFile(recordedPath) || isCandidateFile(join(cacheDir, filename));
+      if (!hadAnyModelFileCandidate) {
+        try {
+          for (const entry of readdirSync(cacheDir)) {
+            if (!entry.includes(filename)) continue;
+            if (entry.endsWith(".etag") || entry.endsWith(".path")) continue;
+            const abs = join(cacheDir, entry);
+            if (isCandidateFile(abs)) {
+              hadAnyModelFileCandidate = true;
+              break;
+            }
+          }
+        } catch {}
+      }
+
+      shouldCleanup =
+        options.refresh === true ||
+        (remoteEtag !== null &&
+          ((localEtag !== null && remoteEtag !== localEtag) ||
+            (localEtag === null && hadAnyModelFileCandidate)));
 
       if (shouldCleanup) {
-        const recordedPath = existsSync(pathMetaPath)
-          ? readFileSync(pathMetaPath, "utf-8").trim() || null
-          : null;
         if (deleteCandidate(recordedPath)) {
           refreshed = true;
           deletedAnyModelFile = true;
@@ -209,7 +242,7 @@ export async function pullModels(
     if (hfRef && filename) {
       const pathMetaPath = join(cacheDir, `${filename}.path`);
       writeFileSync(pathMetaPath, path + "\n", "utf-8");
-      if (remoteEtag && (!shouldCleanup || deletedAnyModelFile)) {
+      if (remoteEtag && (!shouldCleanup || deletedAnyModelFile || !hadAnyModelFileCandidate)) {
         const etagPath = join(cacheDir, `${filename}.etag`);
         writeFileSync(etagPath, remoteEtag + "\n", "utf-8");
       }
