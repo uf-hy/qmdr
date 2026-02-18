@@ -93,8 +93,8 @@ jobs:
             echo "===== AI attempt $i (autofix so far: $CUR) ====="
 
             # Let AI do review + fix + commit (autofix:) + push.
-            PROMPT=$(cat <<'PROMPT_EOF'
-You are working on an existing Pull Request.
+                        PROMPT="$(python3 - <<'PY'
+print("""You are working on an existing Pull Request.
 
 GOAL:
 - Make this PR merge cleanly into the base branch.
@@ -115,8 +115,9 @@ COMMIT/PUSH:
 
 OUTPUT:
 - Leave a PR comment summarizing what you fixed and whether CI should pass now.
-PROMPT_EOF
-)
+""")
+PY
+)"
 
             PROMPT="$PROMPT" opencode github run || true
 
