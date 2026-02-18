@@ -1,7 +1,7 @@
 name: OpenCode PR Review + AutoFix (max 5)
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
 
 permissions:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   review_fix_loop:
-    if: ${{ github.event.pull_request.draft == false }}
+    if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
