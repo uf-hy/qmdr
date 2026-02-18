@@ -1,0 +1,127 @@
+# OpenCode CLI — Issue 触发自动改代码
+# 模型：gpt-5.2 | 思考：high
+name: OpenCode Agent
+
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+jobs:
+  opencode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 当 issue 被打开，或者被标记为 "auto-work" 时触发
+    if: |
+      (github.event_name == 'issues' && github.event.action == 'opened') ||
+      (github.event_name == 'issues' && github.event.label.name == 'auto-work')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "opencode[bot]"
+          git config user.email "opencode[bot]@users.noreply.github.com"
+
+      - name: Install OpenCode CLI
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Run OpenCode
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_BASE_URL }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          
+          opencode run \
+            --model openai/gpt-5.2 \
+            --variant high \
+            "根据以下需求修改代码：
+            标题：$ISSUE_TITLE
+            内容：$ISSUE_BODY
+            
+            RULES:
+            1. ONLY modify files listed in the issue's 'Scope' section (if any)
+            2. Focus on: correctness, performance, robustness, clean code
+            3. Run 'bun test' after changes to verify nothing breaks
+            4. Keep changes minimal and focused on the issue description
+            5. Commit with message: 'fix: <short description> (closes #$ISSUE_NUMBER)'"
+
+      - name: Create PR
+        id: pr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.PAT }}
+          branch: opencode/issue-${{ github.event.issue.number }}
+          title: "🛠️ OpenCode: ${{ github.event.issue.title }}"
+          body: |
+            由 OpenCode CLI (gpt-5.2, thinking: high) 自动生成
+            对应 Issue #${{ github.event.issue.number }}
+            
+            Closes #${{ github.event.issue.number }}
+          commit-message: "feat: opencode auto-fix #${{ github.event.issue.number }}"
+          labels: agent-opencode,auto-pr
+
+      - name: Comment on issue
+        if: steps.pr.outputs.pull-request-number
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const issueNum = ${{ github.event.issue.number }};
+            const prNum = ${{ steps.pr.outputs.pull-request-number }};
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNum,
+              body: `✅ OpenCode 已创建 PR #${prNum}\n\n请查看并合并。`
+            });
+
+  # 链式触发：当 PR 合并后，触发下一个 issue
+  chain-next:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'auto-pr')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find and trigger next issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          CLOSED_ISSUE=$(echo "$PR_BODY" | grep -oP 'Closes #\K\d+' | head -1)
+          
+          if [ -z "$CLOSED_ISSUE" ]; then
+            echo "No linked issue found, skipping chain"
+            exit 0
+          fi
+          
+          echo "Merged PR closed issue #$CLOSED_ISSUE"
+          
+          # Find next issue in the chain
+          NEXT_ISSUES=$(gh issue list --state open --label "auto-chain" --json number,body -q ".[] | select(.body | test(\"depends on #$CLOSED_ISSUE\"; \"i\")) | .number")
+          
+          for ISSUE_NUM in $NEXT_ISSUES; do
+            echo "Triggering next issue: #$ISSUE_NUM"
+            gh issue edit "$ISSUE_NUM" --add-label "auto-work"
+          done
+          
+          if [ -z "$NEXT_ISSUES" ]; then
+            echo "No chained issues found. Pipeline complete!"
+          fi
