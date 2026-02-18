@@ -125,7 +125,8 @@ jobs:
 
   autofix:
     name: Auto-fix (AI) on CI failure
-    if: ${{ github.event_name == 'pull_request' && always() && (needs.typecheck.result == 'failure' || needs.quality.result == 'failure') }}
+    if: ${{ false }}  # disabled: handled by opencode-review loop
+
     needs:
       - typecheck
       - quality
