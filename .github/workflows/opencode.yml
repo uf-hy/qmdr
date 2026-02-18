@@ -5,6 +5,8 @@ name: OpenCode Agent
 on:
   issues:
     types: [opened, labeled]
+  pull_request:
+    types: [closed]
 
 permissions:
   contents: write
@@ -195,7 +197,8 @@ jobs:
 
       - name: Find and trigger next issue
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 用 PAT 添加 label，确保能触发 issues:labeled（GITHUB_TOKEN 会被 GitHub 防递归吞掉）
+          GH_TOKEN: ${{ secrets.PAT }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           CLOSED_ISSUE=$(echo "$PR_BODY" | grep -oP 'Closes #\K\d+' | head -1)
