@@ -52,7 +52,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.PAT }}
           QMD_ALLOW_SQLITE_EXTENSIONS: "1"
         with:
-          model: openai/gpt-5.2
+          model: custom/gpt-5.2
           use_github_token: true
           prompt: |
             Read issue #${{ github.event.issue.number }} carefully.
