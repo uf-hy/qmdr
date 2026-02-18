@@ -1,5 +1,6 @@
 import { homedir } from "os";
 import { join, resolve, sep } from "path";
+import { createHash } from "crypto";
 import {
   existsSync,
   mkdirSync,
@@ -136,10 +137,14 @@ export async function pullModels(
     const hfRef = parseHfUri(model);
     const filename = model.split("/").pop();
 
+    const metaKey = createHash("sha256").update(model).digest("hex").slice(0, 16);
+
     let remoteEtag: string | null = null;
     let shouldCleanup = false;
     let deletedAnyModelFile = false;
     let hadAnyModelFileCandidate = false;
+
+    const deletedModelFiles = new Set<string>();
 
     const deleteCandidate = (candidate: string | null | undefined): boolean => {
       if (!candidate) return false;
@@ -147,7 +152,9 @@ export async function pullModels(
       const absCache = resolve(cacheDir) + sep;
       if (!abs.startsWith(absCache)) return false;
       if (!existsSync(abs)) return false;
-      return safeUnlink(abs);
+      const ok = safeUnlink(abs);
+      if (ok) deletedModelFiles.add(abs);
+      return ok;
     };
 
     const isCandidateFile = (candidate: string | null | undefined): boolean => {
@@ -163,19 +170,40 @@ export async function pullModels(
     };
 
     if (hfRef && filename) {
-      const etagPath = join(cacheDir, `${filename}.etag`);
-      const pathMetaPath = join(cacheDir, `${filename}.path`);
+      const etagPath = join(cacheDir, `${metaKey}.etag`);
+      const pathMetaPath = join(cacheDir, `${metaKey}.path`);
+      const legacyEtagPath = join(cacheDir, `${filename}.etag`);
+      const legacyPathMetaPath = join(cacheDir, `${filename}.path`);
       remoteEtag = await getRemoteEtag(hfRef);
-      const localEtag = existsSync(etagPath) ? readFileSync(etagPath, "utf-8").trim() : null;
-      const recordedPath = existsSync(pathMetaPath)
+      const localEtagMeta = existsSync(etagPath)
+        ? readFileSync(etagPath, "utf-8").trim() || null
+        : null;
+      const localEtagLegacy = existsSync(legacyEtagPath)
+        ? readFileSync(legacyEtagPath, "utf-8").trim() || null
+        : null;
+      const localEtag = localEtagMeta ?? localEtagLegacy;
+      const recordedPathMeta = existsSync(pathMetaPath)
         ? readFileSync(pathMetaPath, "utf-8").trim() || null
         : null;
+      const recordedPathLegacy = existsSync(legacyPathMetaPath)
+        ? readFileSync(legacyPathMetaPath, "utf-8").trim() || null
+        : null;
+      const recordedPath = recordedPathMeta ?? recordedPathLegacy;
+
+      const legacyNameMatches = (entry: string): boolean => {
+        if (entry === filename) return true;
+        return (
+          entry.startsWith(`${filename}.`) ||
+          entry.startsWith(`${filename}-`) ||
+          entry.startsWith(`${filename}_`)
+        );
+      };
 
       hadAnyModelFileCandidate = isCandidateFile(recordedPath) || isCandidateFile(join(cacheDir, filename));
       if (!hadAnyModelFileCandidate) {
         try {
           for (const entry of readdirSync(cacheDir)) {
-            if (!entry.includes(filename)) continue;
+            if (!legacyNameMatches(entry)) continue;
             if (entry.endsWith(".etag") || entry.endsWith(".path")) continue;
             const abs = join(cacheDir, entry);
             if (isCandidateFile(abs)) {
@@ -210,8 +238,9 @@ export async function pullModels(
         // If we don't have a recorded path (or we failed to delete anything), scan cacheDir locally.
         if (!recordedPath || !deletedAnyModelFile) {
           try {
+            const candidates: string[] = [];
             for (const entry of readdirSync(cacheDir)) {
-              if (!entry.includes(filename)) continue;
+              if (!legacyNameMatches(entry)) continue;
               if (entry.endsWith(".etag") || entry.endsWith(".path")) continue;
               const abs = join(cacheDir, entry);
               try {
@@ -219,7 +248,12 @@ export async function pullModels(
               } catch {
                 continue;
               }
-              if (deleteCandidate(abs)) {
+              candidates.push(abs);
+            }
+
+            // Avoid ambiguous deletes (e.g. different models sharing the same basename).
+            if (candidates.length === 1) {
+              if (deleteCandidate(candidates[0])) {
                 refreshed = true;
                 deletedAnyModelFile = true;
               }
@@ -231,6 +265,12 @@ export async function pullModels(
         if (deletedAnyModelFile) {
           if (existsSync(etagPath)) safeUnlink(etagPath);
           if (existsSync(pathMetaPath)) safeUnlink(pathMetaPath);
+
+          // One-time migration cleanup: only remove legacy metadata if it points to a deleted file.
+          if (recordedPathLegacy && deletedModelFiles.has(resolve(recordedPathLegacy))) {
+            if (existsSync(legacyEtagPath)) safeUnlink(legacyEtagPath);
+            if (existsSync(legacyPathMetaPath)) safeUnlink(legacyPathMetaPath);
+          }
         }
       }
     } else if (options.refresh && filename) {
@@ -240,11 +280,31 @@ export async function pullModels(
     const path = await resolveModelFile(model, cacheDir);
     const sizeBytes = existsSync(path) ? statSync(path).size : 0;
     if (hfRef && filename) {
-      const pathMetaPath = join(cacheDir, `${filename}.path`);
+      const pathMetaPath = join(cacheDir, `${metaKey}.path`);
       writeFileSync(pathMetaPath, path + "\n", "utf-8");
       if (remoteEtag && (!shouldCleanup || deletedAnyModelFile || !hadAnyModelFileCandidate)) {
-        const etagPath = join(cacheDir, `${filename}.etag`);
+        const etagPath = join(cacheDir, `${metaKey}.etag`);
         writeFileSync(etagPath, remoteEtag + "\n", "utf-8");
+      }
+
+      // One-time migration cleanup: if legacy metadata points to this resolved path, drop it.
+      const legacyPathMetaPath = join(cacheDir, `${filename}.path`);
+      if (existsSync(legacyPathMetaPath)) {
+        try {
+          const legacyRecorded = readFileSync(legacyPathMetaPath, "utf-8").trim();
+          if (legacyRecorded && resolve(legacyRecorded) === resolve(path)) {
+            safeUnlink(legacyPathMetaPath);
+          }
+        } catch {}
+      }
+      const legacyEtagPath = join(cacheDir, `${filename}.etag`);
+      if (remoteEtag && existsSync(legacyEtagPath)) {
+        try {
+          const legacyEtag = readFileSync(legacyEtagPath, "utf-8").trim();
+          if (legacyEtag && legacyEtag === remoteEtag) {
+            safeUnlink(legacyEtagPath);
+          }
+        } catch {}
       }
     }
     results.push({ model, path, sizeBytes, refreshed });
