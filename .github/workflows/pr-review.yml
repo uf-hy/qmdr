@@ -31,13 +31,16 @@ jobs:
       - name: Install Codex CLI
         run: npm install -g @openai/codex
 
-      - name: Fetch base
+      - name: Download PR diff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_API_URL: ${{ github.event.pull_request.url }}
         run: |
-          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1 || true
-
-      - name: Build diff
-        run: |
-          git diff --no-color origin/${{ github.event.pull_request.base.ref }}...HEAD > /tmp/pr.diff
+          # 用 GitHub API 直接拿 diff，避免 checkout 深度/merge-base 坑
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.v3.diff" \
+            "$PR_API_URL" > /tmp/pr.diff
           wc -l /tmp/pr.diff
 
       - name: Run Codex Review (structured JSON)
