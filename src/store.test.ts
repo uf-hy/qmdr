@@ -881,6 +881,14 @@ describe("FTS Search", () => {
     expect(filtered).toHaveLength(1);
     expect(filtered[0]!.displayPath).toBe(`${collection1}/doc1.md`);
 
+    // Filter by multiple collections
+    const union = store.searchFTS("searchable", 10, [collection1, collection2]);
+    expect(union).toHaveLength(2);
+    expect(new Set(union.map(r => r.displayPath))).toEqual(new Set([
+      `${collection1}/doc1.md`,
+      `${collection2}/doc2.md`,
+    ]));
+
     await cleanupTestDb(store);
   });
 

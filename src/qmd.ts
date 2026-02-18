@@ -95,22 +95,20 @@ import { existsSync } from "fs";
 import { join } from "path";
 
 // =============================================================================
-// Load config from ~/.config/qmd/.env (single source of truth)
+// Load config from ~/.config/qmd/.env
 //
-// QMD_ prefixed vars: .env WINS over inherited environment.
-//   → Why: When spawned by OpenClaw, the parent process may carry stale env
-//     vars (e.g. QMD_RERANK_PROVIDER=siliconflow from an old /etc/environment).
-//     The .env file is the user's explicit config and should be authoritative.
-//
-// All other vars: inherited environment wins (standard dotenv behavior).
-//   → Why: System vars like PATH, HOME, NO_COLOR, XDG_* should be controlled
-//     by the parent process / OS, not overridden by a QMD config file.
+// Default: inherited environment wins (standard dotenv behavior).
+// Escape hatch: set QMD_DOTENV_OVERRIDE=1 to make QMD_ keys in .env override
+// inherited env (useful when the parent process carries stale QMD_* values).
+// You can temporarily disable that behavior per-run with QMD_DOTENV_OVERRIDE=0.
 // =============================================================================
 
 const qmdConfigDir = process.env.QMD_CONFIG_DIR || join(homedir(), ".config", "qmd");
 const qmdEnvPath = join(qmdConfigDir, ".env");
 if (existsSync(qmdEnvPath)) {
   const envContent = readFileSync(qmdEnvPath, "utf-8");
+
+  const entries: { key: string; val: string }[] = [];
   for (const line of envContent.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
@@ -118,11 +116,25 @@ if (existsSync(qmdEnvPath)) {
     if (eqIdx === -1) continue;
     const key = trimmed.slice(0, eqIdx).trim();
     const val = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
+    if (!key) continue;
+    entries.push({ key, val });
+  }
+
+  const overrideRaw = process.env.QMD_DOTENV_OVERRIDE
+    ?? entries.find(e => e.key === "QMD_DOTENV_OVERRIDE")?.val;
+  const overrideQmdKeys = overrideRaw === "1" || overrideRaw === "true";
+
+  for (const { key, val } of entries) {
     if (key.startsWith("QMD_")) {
-      // QMD's own config: .env is the source of truth, always override
-      process.env[key] = val;
-    } else if (!process.env[key]) {
-      // Non-QMD vars: only set if not already present (standard dotenv)
+      if (overrideQmdKeys) {
+        // QMD's own config: .env may be made authoritative explicitly.
+        process.env[key] = val;
+      } else if (process.env[key] === undefined) {
+        // Default: do not override inherited env (supports per-run overrides).
+        process.env[key] = val;
+      }
+    } else if (process.env[key] === undefined) {
+      // Non-QMD vars: standard dotenv semantics.
       process.env[key] = val;
     }
   }
@@ -2140,11 +2152,16 @@ type OutputOptions = {
 };
 
 // Validate -c collection names: skip missing ones with a warning instead of hard exit.
-// Returns the list of valid collection names, or undefined if none specified / all invalid.
+// Returns undefined if no filter requested; otherwise returns the list of valid names
+// (possibly empty, which means "match nothing").
 function resolveCollectionFilter(opts: OutputOptions): string[] | undefined {
   if (!opts.collection || opts.collection.length === 0) return undefined;
   const valid: string[] = [];
-  for (const name of opts.collection) {
+  const seen = new Set<string>();
+  for (const raw of opts.collection) {
+    const name = String(raw || "").trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
     const coll = getCollectionFromYaml(name);
     if (coll) {
       valid.push(name);
@@ -2152,7 +2169,10 @@ function resolveCollectionFilter(opts: OutputOptions): string[] | undefined {
       process.stderr.write(`Warning: collection '${name}' not found, skipping\n`);
     }
   }
-  return valid.length > 0 ? valid : undefined;
+
+  // If the user requested a filter but none resolved, return an empty list.
+  // Callers / store search treat [] as "match nothing" (safer than no filter).
+  return valid;
 }
 
 // Highlight query terms in text (skip short words < 3 chars)
@@ -2255,7 +2275,13 @@ function outputResults(results: { file: string; displayPath: string; title: stri
   const filtered = contentDeduped.slice(0, opts.limit);
 
   if (filtered.length === 0) {
-    console.log("No results found above minimum score threshold.");
+    if (opts.format === "json") {
+      process.stdout.write("[]\n");
+    } else if (opts.format === "files") {
+      // No output (machine-readable).
+    } else {
+      console.log("No results found above minimum score threshold.");
+    }
     return;
   }
 
@@ -2371,6 +2397,17 @@ function outputResults(results: { file: string; displayPath: string; title: stri
   }
 }
 
+function outputNoResults(opts: OutputOptions, message: string = "No results found."): void {
+  if (opts.format === "json") {
+    process.stdout.write("[]\n");
+    return;
+  }
+  if (opts.format === "files") {
+    return;
+  }
+  console.log(message);
+}
+
 function search(query: string, opts: OutputOptions): void {
   const db = getDb();
 
@@ -2396,7 +2433,7 @@ function search(query: string, opts: OutputOptions): void {
   closeDb();
 
   if (resultsWithContext.length === 0) {
-    console.log("No results found.");
+    outputNoResults(opts);
     return;
   }
   outputResults(resultsWithContext, query, opts);
@@ -2466,7 +2503,7 @@ async function vectorSearch(query: string, opts: OutputOptions, model: string = 
     closeDb();
 
     if (results.length === 0) {
-      console.log("No results found.");
+      outputNoResults(opts);
       return;
     }
     outputResults(results, query, { ...opts, limit: results.length });
@@ -2648,7 +2685,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     const candidates = fused.slice(0, RERANK_DOC_LIMIT);
 
     if (candidates.length === 0) {
-      console.log("No results found.");
+      outputNoResults(opts);
       closeDb();
       return;
     }
@@ -2950,13 +2987,18 @@ function parseCLI() {
   const defaultLimit = (format === "files" || format === "json") ? 20 : 5;
   const isAll = !!values.all;
 
+  const collectionRaw = values.collection as unknown;
+  const collection = Array.isArray(collectionRaw)
+    ? collectionRaw
+    : (typeof collectionRaw === "string" ? [collectionRaw] : undefined);
+
   const opts: OutputOptions = {
     format,
     full: !!values.full,
     limit: isAll ? 100000 : (values.n ? parseInt(String(values.n), 10) || defaultLimit : defaultLimit),
     minScore: values["min-score"] ? parseFloat(String(values["min-score"])) || 0 : 0,
     all: isAll,
-    collection: values.collection as string[] | undefined,
+    collection,
     lineNumbers: !!values["line-numbers"],
     profile: !!values.profile,
     verbose: !!values.verbose,
@@ -3009,7 +3051,7 @@ function showHelp(): void {
   console.log("  --csv                      - CSV output with snippets");
   console.log("  --md                       - Markdown output");
   console.log("  --xml                      - XML output");
-  console.log("  -c, --collection <name>    - Filter results to a specific collection");
+  console.log("  -c, --collection <name>    - Filter results (repeatable: -c a -c b)");
   console.log("");
   console.log("Multi-get options:");
   console.log("  -l <num>                   - Maximum lines per file");

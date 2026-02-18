@@ -2125,6 +2125,10 @@ function buildFTS5Query(query: string): string | null {
 }
 
 export function searchFTS(db: Database, query: string, limit: number = 20, collectionNames?: string[]): SearchResult[] {
+  // If a caller explicitly requested a collection filter but none resolved,
+  // treat as "match nothing" (safer than searching all collections).
+  if (collectionNames && collectionNames.length === 0) return [];
+
   const ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
 
@@ -2182,6 +2186,10 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
 // =============================================================================
 
 export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionNames?: string[], session?: ILLMSession): Promise<SearchResult[]> {
+  // If a caller explicitly requested a collection filter but none resolved,
+  // treat as "match nothing" (safer than searching all collections).
+  if (collectionNames && collectionNames.length === 0) return [];
+
   // Graceful degradation: if extensions are disabled, vector search is unavailable.
   if (!isSQLiteExtensionLoadingAllowed()) return [];
 
