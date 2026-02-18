@@ -138,16 +138,18 @@ export async function pullModels(
 
     if (hfRef && filename) {
       const etagPath = join(cacheDir, `${filename}.etag`);
+      const pathMetaPath = join(cacheDir, `${filename}.path`);
       const remoteEtag = await getRemoteEtag(hfRef);
       const localEtag = existsSync(etagPath) ? readFileSync(etagPath, "utf-8").trim() : null;
-      const shouldRefresh = options.refresh || !remoteEtag || remoteEtag !== localEtag;
+      const shouldCleanup =
+        options.refresh === true ||
+        (remoteEtag !== null && localEtag !== null && remoteEtag !== localEtag);
 
-      if (shouldRefresh) {
-        // Prefer using resolveModelFile()'s real path for cleanup; it may not match URI basename.
-        try {
-          const resolvedPath = await resolveModelFile(model, cacheDir);
-          if (deleteCandidate(resolvedPath)) refreshed = true;
-        } catch {}
+      if (shouldCleanup) {
+        const recordedPath = existsSync(pathMetaPath)
+          ? readFileSync(pathMetaPath, "utf-8").trim() || null
+          : null;
+        if (deleteCandidate(recordedPath)) refreshed = true;
 
         // Back-compat: if cache uses URI basename, delete it too.
         if (filename) {
@@ -155,6 +157,7 @@ export async function pullModels(
         }
 
         if (existsSync(etagPath)) unlinkSync(etagPath);
+        if (existsSync(pathMetaPath)) unlinkSync(pathMetaPath);
       }
     } else if (options.refresh && filename) {
       if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
@@ -163,6 +166,8 @@ export async function pullModels(
     const path = await resolveModelFile(model, cacheDir);
     const sizeBytes = existsSync(path) ? statSync(path).size : 0;
     if (hfRef && filename) {
+      const pathMetaPath = join(cacheDir, `${filename}.path`);
+      writeFileSync(pathMetaPath, path + "\n", "utf-8");
       const remoteEtag = await getRemoteEtag(hfRef);
       if (remoteEtag) {
         const etagPath = join(cacheDir, `${filename}.etag`);
