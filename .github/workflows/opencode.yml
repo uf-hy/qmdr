@@ -47,7 +47,7 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           
           opencode run \
-            --model gpt-5.2 \
+            --model local.gpt-5.2 \
             --variant high \
             "根据以下需求修改代码：
             标题：$ISSUE_TITLE
