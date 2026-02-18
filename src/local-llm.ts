@@ -3,6 +3,7 @@ import { join, resolve, sep } from "path";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   statSync,
   unlinkSync,
   readFileSync,
@@ -136,6 +137,8 @@ export async function pullModels(
     const filename = model.split("/").pop();
 
     let remoteEtag: string | null = null;
+    let shouldCleanup = false;
+    let deletedAnyModelFile = false;
 
     const deleteCandidate = (candidate: string | null | undefined): boolean => {
       if (!candidate) return false;
@@ -151,23 +154,51 @@ export async function pullModels(
       const pathMetaPath = join(cacheDir, `${filename}.path`);
       remoteEtag = await getRemoteEtag(hfRef);
       const localEtag = existsSync(etagPath) ? readFileSync(etagPath, "utf-8").trim() : null;
-      const shouldCleanup =
-        options.refresh === true ||
-        (remoteEtag !== null && remoteEtag !== localEtag);
+      shouldCleanup = options.refresh === true || (remoteEtag !== null && remoteEtag !== localEtag);
 
       if (shouldCleanup) {
         const recordedPath = existsSync(pathMetaPath)
           ? readFileSync(pathMetaPath, "utf-8").trim() || null
           : null;
-        if (deleteCandidate(recordedPath)) refreshed = true;
+        if (deleteCandidate(recordedPath)) {
+          refreshed = true;
+          deletedAnyModelFile = true;
+        }
 
         // Back-compat: if cache uses URI basename, delete it too.
         if (filename) {
-          if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
+          if (deleteCandidate(join(cacheDir, filename))) {
+            refreshed = true;
+            deletedAnyModelFile = true;
+          }
         }
 
-        if (existsSync(etagPath)) safeUnlink(etagPath);
-        if (existsSync(pathMetaPath)) safeUnlink(pathMetaPath);
+        // Legacy back-compat: older node-llama-cpp cache entries may not match `${cacheDir}/${filename}`.
+        // If we don't have a recorded path (or we failed to delete anything), scan cacheDir locally.
+        if (!recordedPath || !deletedAnyModelFile) {
+          try {
+            for (const entry of readdirSync(cacheDir)) {
+              if (!entry.includes(filename)) continue;
+              if (entry.endsWith(".etag") || entry.endsWith(".path")) continue;
+              const abs = join(cacheDir, entry);
+              try {
+                if (!statSync(abs).isFile()) continue;
+              } catch {
+                continue;
+              }
+              if (deleteCandidate(abs)) {
+                refreshed = true;
+                deletedAnyModelFile = true;
+              }
+            }
+          } catch {}
+        }
+
+        // Only clear metadata if we actually removed at least one model file.
+        if (deletedAnyModelFile) {
+          if (existsSync(etagPath)) safeUnlink(etagPath);
+          if (existsSync(pathMetaPath)) safeUnlink(pathMetaPath);
+        }
       }
     } else if (options.refresh && filename) {
       if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
@@ -178,7 +209,7 @@ export async function pullModels(
     if (hfRef && filename) {
       const pathMetaPath = join(cacheDir, `${filename}.path`);
       writeFileSync(pathMetaPath, path + "\n", "utf-8");
-      if (remoteEtag) {
+      if (remoteEtag && (!shouldCleanup || deletedAnyModelFile)) {
         const etagPath = join(cacheDir, `${filename}.etag`);
         writeFileSync(etagPath, remoteEtag + "\n", "utf-8");
       }
