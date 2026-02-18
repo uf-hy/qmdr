@@ -1,7 +1,7 @@
 name: CI
 
 on:
-  pull_request:
+  pull_request_target:
     branches:
       - main
   push:
@@ -19,6 +19,7 @@ concurrency:
 jobs:
   typecheck:
     name: Typecheck
+    if: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -42,6 +43,7 @@ jobs:
 
   quality:
     name: Quality (typecheck + unit tests)
+    if: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -65,6 +67,7 @@ jobs:
 
   integration:
     name: Integration (SiliconFlow smoke)
+    if: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository }}
     continue-on-error: true
     needs:
       - typecheck
