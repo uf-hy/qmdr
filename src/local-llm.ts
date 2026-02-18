@@ -120,11 +120,22 @@ export async function pullModels(
     mkdirSync(cacheDir, { recursive: true });
   }
 
+  const safeUnlink = (abs: string): boolean => {
+    try {
+      unlinkSync(abs);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const results: PullResult[] = [];
   for (const model of models) {
     let refreshed = false;
     const hfRef = parseHfUri(model);
     const filename = model.split("/").pop();
+
+    let remoteEtag: string | null = null;
 
     const deleteCandidate = (candidate: string | null | undefined): boolean => {
       if (!candidate) return false;
@@ -132,18 +143,17 @@ export async function pullModels(
       const absCache = resolve(cacheDir) + sep;
       if (!abs.startsWith(absCache)) return false;
       if (!existsSync(abs)) return false;
-      unlinkSync(abs);
-      return true;
+      return safeUnlink(abs);
     };
 
     if (hfRef && filename) {
       const etagPath = join(cacheDir, `${filename}.etag`);
       const pathMetaPath = join(cacheDir, `${filename}.path`);
-      const remoteEtag = await getRemoteEtag(hfRef);
+      remoteEtag = await getRemoteEtag(hfRef);
       const localEtag = existsSync(etagPath) ? readFileSync(etagPath, "utf-8").trim() : null;
       const shouldCleanup =
         options.refresh === true ||
-        (remoteEtag !== null && localEtag !== null && remoteEtag !== localEtag);
+        (remoteEtag !== null && remoteEtag !== localEtag);
 
       if (shouldCleanup) {
         const recordedPath = existsSync(pathMetaPath)
@@ -156,8 +166,8 @@ export async function pullModels(
           if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
         }
 
-        if (existsSync(etagPath)) unlinkSync(etagPath);
-        if (existsSync(pathMetaPath)) unlinkSync(pathMetaPath);
+        if (existsSync(etagPath)) safeUnlink(etagPath);
+        if (existsSync(pathMetaPath)) safeUnlink(pathMetaPath);
       }
     } else if (options.refresh && filename) {
       if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
@@ -168,7 +178,6 @@ export async function pullModels(
     if (hfRef && filename) {
       const pathMetaPath = join(cacheDir, `${filename}.path`);
       writeFileSync(pathMetaPath, path + "\n", "utf-8");
-      const remoteEtag = await getRemoteEtag(hfRef);
       if (remoteEtag) {
         const etagPath = join(cacheDir, `${filename}.etag`);
         writeFileSync(etagPath, remoteEtag + "\n", "utf-8");
