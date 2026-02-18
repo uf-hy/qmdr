@@ -12,6 +12,7 @@
   },
   "model": {
     "provider": "custom",
-    "id": "gpt-4o-mini"
+    "id": "gpt-5.2",
+    "reasoningEffort": "xhigh"
   }
 }
