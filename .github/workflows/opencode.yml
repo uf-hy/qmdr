@@ -16,6 +16,9 @@ jobs:
   opencode:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    concurrency:
+      group: opencode-issue-${{ github.event.issue.number }}
+      cancel-in-progress: true
     # 当 issue 被打开，或者被标记为 "auto-work" 时触发
     if: |
       (github.event_name == 'issues' && github.event.action == 'opened') ||
@@ -65,29 +68,75 @@ jobs:
           (conf_dir / "opencode.jsonc").write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
           PY
 
+      - name: Collect PR reviewer feedback (latest)
+        id: feedback
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const issueNum = context.payload.issue.number;
+            const marker = '<!-- AI_PR_REVIEW_FEEDBACK -->';
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNum,
+              per_page: 100,
+            });
+            const rounds = comments.filter(c => (c.body || '').includes(marker)).length;
+            const latest = [...comments].reverse().find(c => (c.body || '').includes(marker));
+            core.setOutput('rounds', String(rounds));
+            core.setOutput('text', latest ? latest.body : '');
+
       - name: Run OpenCode
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REVIEW_FEEDBACK: ${{ steps.feedback.outputs.text }}
+          REVIEW_ROUNDS: ${{ steps.feedback.outputs.rounds }}
         run: |
           export PATH="$HOME/.local/bin:$PATH"
 
-          # 明确指定 provider/model，避免被解析成 providerID
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          title = os.environ.get('ISSUE_TITLE','')
+          body = os.environ.get('ISSUE_BODY','')
+          num = os.environ.get('ISSUE_NUMBER','')
+          feedback = os.environ.get('REVIEW_FEEDBACK','').strip()
+          rounds = os.environ.get('REVIEW_ROUNDS','0')
+
+          parts = []
+          parts.append('根据以下需求修改代码：')
+          parts.append(f'标题：{title}')
+          parts.append('内容：')
+          parts.append(body)
+          parts.append('')
+          parts.append('RULES:')
+          parts.append('1. ONLY modify files listed in the issue\'s \'Scope\' section (if any)')
+          parts.append('2. Focus on: correctness, performance, robustness, clean code')
+          parts.append('3. Run \'bun test\' after changes to verify nothing breaks')
+          parts.append('4. Keep changes minimal and focused on the issue description')
+          parts.append(f'5. Commit with message: \'fix: <short description> (closes #{num})\'')
+
+          if feedback:
+            parts.append('')
+            parts.append('---')
+            parts.append(f'PR Reviewer 反馈（累计 {rounds} 轮；如有 Blocking 必须优先解决）：')
+            parts.append(feedback)
+
+          prompt='\n'.join(parts)
+          Path('/tmp/opencode_prompt.txt').write_text(prompt, encoding='utf-8')
+          PY
+
+          # 用附件方式传入长 prompt，避免 shell 引号/换行被吃掉
           opencode run \
             --model openai/gpt-5.2 \
             --variant xhigh \
-            "根据以下需求修改代码：
-            标题：$ISSUE_TITLE
-            内容：$ISSUE_BODY
-
-            RULES:
-            1. ONLY modify files listed in the issue's 'Scope' section (if any)
-            2. Focus on: correctness, performance, robustness, clean code
-            3. Run 'bun test' after changes to verify nothing breaks
-            4. Keep changes minimal and focused on the issue description
-            5. Commit with message: 'fix: <short description> (closes #$ISSUE_NUMBER)'"
+            --file /tmp/opencode_prompt.txt \
+            "按附件 opencode_prompt.txt 的要求修改代码。"
 
       - name: Create PR
         id: pr
@@ -112,11 +161,26 @@ jobs:
           script: |
             const issueNum = ${{ github.event.issue.number }};
             const prNum = ${{ steps.pr.outputs.pull-request-number }};
+            const msg = `✅ OpenCode 已创建 PR #${prNum}\n\n请查看并合并。`;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNum,
+              per_page: 100,
+            });
+
+            const already = comments.some(c => (c.body || '').includes(`PR #${prNum}`));
+            if (already) {
+              core.info('Comment already exists, skip');
+              return;
+            }
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNum,
-              body: `✅ OpenCode 已创建 PR #${prNum}\n\n请查看并合并。`
+              body: msg,
             });
 
   # 链式触发：当 PR 合并后，触发下一个 issue

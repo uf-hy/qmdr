@@ -1,0 +1,178 @@
+# PR Reviewer — Codex 做审查；有问题回传到 Issue 触发下一轮修复（最多 5 轮）
+name: PR Reviewer (Codex)
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # 只审查本仓库内分支 + 且带 auto-pr 标签的 PR（避免 fork 注入风险）
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'auto-pr')
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Fetch base
+        run: |
+          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1 || true
+
+      - name: Run Codex Review
+        id: codex
+        env:
+          CUSTOM_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.ref }}"
+
+          cat > /tmp/review_prompt.txt <<'PROMPT'
+          你是这个 PR 的 Reviewer。
+
+          要求：
+          1) 只做代码审查，不要修改任何文件。
+          2) 不要建议无关重构；只指出与本 PR 相关的风险/问题/改进。
+          3) 输出必须严格按以下格式：
+             - 第一行：VERDICT: APPROVE 或 VERDICT: REQUEST_CHANGES
+             - 然后依次输出：
+               Summary:
+               - ...
+               Blocking:
+               - ...（如果没有阻塞项写 None）
+               Suggestions:
+               - ...（可为空）
+          4) 如果需要 Issue 侧继续修复，请在 Blocking 里写清楚「要改哪里 / 为什么 / 如何验收」。
+          PROMPT
+
+          codex \
+            -c 'model_providers.custom_openai.name="Custom OpenAI"' \
+            -c 'model_providers.custom_openai.base_url="${{ secrets.OPENAI_BASE_URL }}"' \
+            -c 'model_providers.custom_openai.env_key="CUSTOM_OPENAI_KEY"' \
+            -c 'model_provider="custom_openai"' \
+            review --base "$BASE" - < /tmp/review_prompt.txt | tee /tmp/review.txt
+
+          echo "text<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/review.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          VERDICT=$(head -n 1 /tmp/review.txt | sed -E 's/^VERDICT:[[:space:]]*//')
+          echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
+
+      - name: Submit PR review
+        uses: actions/github-script@v7
+        env:
+          REVIEW_TEXT: ${{ steps.codex.outputs.text }}
+          VERDICT: ${{ steps.codex.outputs.verdict }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const verdict = (process.env.VERDICT || '').trim().toUpperCase();
+            const body = process.env.REVIEW_TEXT || '(no review text)';
+
+            const event = verdict.includes('APPROVE') ? 'APPROVE' : 'REQUEST_CHANGES';
+
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              event,
+              body,
+            });
+
+      - name: Send feedback back to Issue (max 5 rounds)
+        if: ${{ !contains(steps.codex.outputs.verdict, 'APPROVE') }}
+        uses: actions/github-script@v7
+        env:
+          REVIEW_TEXT: ${{ steps.codex.outputs.text }}
+        with:
+          # 用 PAT（非 GITHUB_TOKEN）触发 issues:labeled 工作流，避免 GitHub 防递归机制吞事件
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const pr = context.payload.pull_request;
+            const body = (pr.body || '');
+            const m = body.match(/Closes\s+#(\d+)/i);
+            if (!m) {
+              core.warning('PR body has no Closes #<issue>, skip sending feedback');
+              return;
+            }
+            const issue_number = Number(m[1]);
+
+            // 统计轮次（最多 5 轮）
+            const marker = '<!-- AI_PR_REVIEW_FEEDBACK -->';
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              per_page: 100,
+            });
+            const rounds = comments.filter(c => (c.body || '').includes(marker)).length;
+            const nextRound = rounds + 1;
+
+            if (nextRound > 5) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                body: `${marker}\n⚠️ PR Reviewer: 已达到最大回合数 5，停止自动往返。\n请主人手动介入：${pr.html_url}`
+              });
+              return;
+            }
+
+            const reviewText = process.env.REVIEW_TEXT || '(no review text)';
+            const commentBody = [
+              marker,
+              `### 🔁 PR Reviewer 反馈（第 ${nextRound}/5 轮）`,
+              `来源 PR: #${pr.number} ${pr.html_url}`,
+              '',
+              reviewText,
+              '',
+              '请 Issue Handler 根据以上 Blocking/Suggestions 修复后再推新提交。'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: commentBody,
+            });
+
+            // 重新触发 Issue handler：toggle auto-work label
+            const labels = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              per_page: 100,
+            });
+            const has = labels.data.some(l => l.name === 'auto-work');
+            if (has) {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                name: 'auto-work',
+              });
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              labels: ['auto-work'],
+            });
