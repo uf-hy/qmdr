@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure Git
         run: |
@@ -142,7 +142,7 @@ jobs:
         id: pr
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           branch: opencode/issue-${{ github.event.issue.number }}
           title: "🛠️ OpenCode: ${{ github.event.issue.title }}"
           body: |

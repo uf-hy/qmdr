@@ -137,7 +137,8 @@ jobs:
           REVIEW_PATH: ${{ steps.codex.outputs.review_path }}
           VERDICT: ${{ steps.codex.outputs.verdict }}
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # 用你的 PAT 提交 review，让 Review 显示为 uf-hy（PR 作者是 GITHUB_TOKEN 创建的 bot，不会撞“自己审自己”）
+          github-token: ${{ secrets.PAT }}
           script: |
             const fs = require('fs');
             const pr = context.payload.pull_request;
