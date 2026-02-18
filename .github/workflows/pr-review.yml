@@ -1,4 +1,4 @@
-# PR Reviewer — Codex 做审查；有问题回传到 Issue 触发下一轮修复（最多 5 轮）
+# PR Reviewer — Codex 审查；有问题回传到 Issue 触发下一轮修复（最多 5 轮）
 name: PR Reviewer (Codex)
 
 on:
@@ -35,45 +35,98 @@ jobs:
         run: |
           git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1 || true
 
-      - name: Run Codex Review
+      - name: Build diff
+        run: |
+          git diff --no-color origin/${{ github.event.pull_request.base.ref }}...HEAD > /tmp/pr.diff
+          wc -l /tmp/pr.diff
+
+      - name: Run Codex Review (structured JSON)
         id: codex
         env:
           CUSTOM_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          BASE="${{ github.event.pull_request.base.ref }}"
+
+          cat > /tmp/review_schema.json <<'JSON'
+          {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "verdict": {"type": "string", "enum": ["APPROVE", "REQUEST_CHANGES"]},
+              "summary": {"type": "array", "items": {"type": "string"}},
+              "blocking": {"type": "array", "items": {"type": "string"}},
+              "suggestions": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["verdict", "summary", "blocking", "suggestions"]
+          }
+          JSON
 
           cat > /tmp/review_prompt.txt <<'PROMPT'
           你是这个 PR 的 Reviewer。
 
-          要求：
-          1) 只做代码审查，不要修改任何文件。
-          2) 不要建议无关重构；只指出与本 PR 相关的风险/问题/改进。
-          3) 输出必须严格按以下格式：
-             - 第一行：VERDICT: APPROVE 或 VERDICT: REQUEST_CHANGES
-             - 然后依次输出：
-               Summary:
-               - ...
-               Blocking:
-               - ...（如果没有阻塞项写 None）
-               Suggestions:
-               - ...（可为空）
-          4) 如果需要 Issue 侧继续修复，请在 Blocking 里写清楚「要改哪里 / 为什么 / 如何验收」。
+          只做代码审查，不要修改任何文件，不要运行任何会改动仓库的命令。
+          请阅读 diff 文件：/tmp/pr.diff，然后给出结构化结论。
+
+          规则：
+          - 如果存在必须修复的问题（会导致 bug、测试失败、破坏兼容、明显不符合需求），verdict=REQUEST_CHANGES，并把问题写到 blocking。
+          - 如果没有阻塞项，verdict=APPROVE，blocking 为空数组。
+          - summary 用 1-3 条概括本 PR 做了什么。
+          - suggestions 可以给可选改进（不强制）。
           PROMPT
 
+          # 用 codex exec + output schema 强制产出机器可解析结果
           codex \
             -c 'model_providers.custom_openai.name="Custom OpenAI"' \
             -c 'model_providers.custom_openai.base_url="${{ secrets.OPENAI_BASE_URL }}"' \
             -c 'model_providers.custom_openai.env_key="CUSTOM_OPENAI_KEY"' \
             -c 'model_provider="custom_openai"' \
-            review --base "$BASE" - < /tmp/review_prompt.txt | tee /tmp/review.txt
+            -a on-failure \
+            exec \
+            --sandbox read-only \
+            --output-schema /tmp/review_schema.json \
+            --output-last-message /tmp/review_out.json \
+            -m gpt-5.3-codex \
+            - < /tmp/review_prompt.txt
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('/tmp/review_out.json').read_text('utf-8'))
+          verdict = data['verdict']
+
+          md = []
+          md.append(f"VERDICT: {verdict}")
+          md.append("")
+          md.append("Summary:")
+          for x in data['summary']:
+            md.append(f"- {x}")
+          md.append("")
+          md.append("Blocking:")
+          if data['blocking']:
+            for x in data['blocking']:
+              md.append(f"- {x}")
+          else:
+            md.append("- None")
+          md.append("")
+          md.append("Suggestions:")
+          if data['suggestions']:
+            for x in data['suggestions']:
+              md.append(f"- {x}")
+          else:
+            md.append("- None")
+
+          Path('/tmp/review.md').write_text("\n".join(md), encoding='utf-8')
+          print(verdict)
+          PY
+
+          VERDICT=$(python3 -c 'import json; print(json.load(open("/tmp/review_out.json"))["verdict"])')
+          echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
 
           echo "text<<EOF" >> $GITHUB_OUTPUT
-          cat /tmp/review.txt >> $GITHUB_OUTPUT
+          cat /tmp/review.md >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-
-          VERDICT=$(head -n 1 /tmp/review.txt | sed -E 's/^VERDICT:[[:space:]]*//')
-          echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
 
       - name: Submit PR review
         uses: actions/github-script@v7
@@ -86,8 +139,7 @@ jobs:
             const pr = context.payload.pull_request;
             const verdict = (process.env.VERDICT || '').trim().toUpperCase();
             const body = process.env.REVIEW_TEXT || '(no review text)';
-
-            const event = verdict.includes('APPROVE') ? 'APPROVE' : 'REQUEST_CHANGES';
+            const event = verdict === 'APPROVE' ? 'APPROVE' : 'REQUEST_CHANGES';
 
             await github.rest.pulls.createReview({
               owner: context.repo.owner,
@@ -98,12 +150,12 @@ jobs:
             });
 
       - name: Send feedback back to Issue (max 5 rounds)
-        if: ${{ !contains(steps.codex.outputs.verdict, 'APPROVE') }}
+        if: ${{ steps.codex.outputs.verdict == 'REQUEST_CHANGES' }}
         uses: actions/github-script@v7
         env:
           REVIEW_TEXT: ${{ steps.codex.outputs.text }}
         with:
-          # 用 PAT（非 GITHUB_TOKEN）触发 issues:labeled 工作流，避免 GitHub 防递归机制吞事件
+          # 用 PAT 触发 issues:labeled 工作流，避免 GitHub 防递归机制吞事件
           github-token: ${{ secrets.PAT }}
           script: |
             const pr = context.payload.pull_request;
@@ -115,7 +167,6 @@ jobs:
             }
             const issue_number = Number(m[1]);
 
-            // 统计轮次（最多 5 轮）
             const marker = '<!-- AI_PR_REVIEW_FEEDBACK -->';
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
