@@ -159,6 +159,7 @@ jobs:
             });
 
       - name: Notify Telegram (review result)
+        continue-on-error: true
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
@@ -172,20 +173,11 @@ jobs:
           ISSUE_NUM=$(echo "$PR_BODY" | grep -oP 'Closes #\K\d+' | head -1)
           PR_URL="${{ github.server_url }}/${{ github.repository }}/pull/${PR_NUM}"
           if [ "$VERDICT" = "APPROVE" ]; then
-            TEXT=$(cat <<EOF
-            ✅ [Reviewer通过] PR #${PR_NUM}
-            ${PR_URL}
-            Issue: #${ISSUE_NUM}
-            EOF
-            )
+            TITLE="✅ [Reviewer通过] PR #${PR_NUM}"
           else
-            TEXT=$(cat <<EOF
-            🛠️ [Reviewer要求修改] PR #${PR_NUM}
-            ${PR_URL}
-            Issue: #${ISSUE_NUM}
-            EOF
-            )
+            TITLE="🛠️ [Reviewer要求修改] PR #${PR_NUM}"
           fi
+          TEXT="${TITLE}\n${PR_URL}\nIssue: #${ISSUE_NUM}"
           curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
             -d chat_id="$TG_CHAT_ID" \
             --data-urlencode text="$TEXT" \
