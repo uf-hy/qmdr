@@ -138,6 +138,7 @@ jobs:
             --model openai/gpt-5.2 \
             --variant xhigh \
             --file /tmp/opencode_prompt.txt \
+            -- \
             "按附件 opencode_prompt.txt 的要求修改代码。"
 
       - name: Create PR
