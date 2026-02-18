@@ -11,7 +11,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: opencode-pr-loop-${{ github.event.pull_request.number }}
+  group: opencode-pr-loop-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -127,7 +127,9 @@ PROMPT_EOF
 
             echo "Checks passed. Done."
 
-            curl -s -X POST               -H "Authorization: token $GITHUB_TOKEN"               -H "Accept: application/vnd.github+json"               -d "{"body":"✅ AI Gate: PASS (attempt $i). typecheck + unit tests passed."}"               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" > /dev/null
+            curl -s -X POST   -H "Authorization: token $GITHUB_TOKEN"   -H "Accept: application/vnd.github+json"   -d @-   "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" > /dev/null <<EOF
+{"body":"✅ AI Gate: PASS (attempt $i). typecheck + unit tests passed."}
+EOF
 
             exit 0
           done
@@ -143,4 +145,6 @@ PROMPT_EOF
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          curl -s -X POST             -H "Authorization: token $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -d "{"body":"❌ AI Gate: FAIL (hit max 5 attempts or checks keep failing). Open Actions logs to see the exact error."}"             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" > /dev/null
+          curl -s -X POST   -H "Authorization: token $GH_TOKEN"   -H "Accept: application/vnd.github+json"   -d @-   "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" > /dev/null <<EOF
+{"body":"❌ AI Gate: FAIL (hit max 5 attempts or checks keep failing). Open Actions logs to see the exact error."}
+EOF
