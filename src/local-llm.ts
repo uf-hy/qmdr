@@ -1,11 +1,10 @@
 import { homedir } from "os";
-import { join } from "path";
+import { join, resolve, sep } from "path";
 import {
   existsSync,
   mkdirSync,
   statSync,
   unlinkSync,
-  readdirSync,
   readFileSync,
   writeFileSync,
 } from "fs";
@@ -126,34 +125,39 @@ export async function pullModels(
     let refreshed = false;
     const hfRef = parseHfUri(model);
     const filename = model.split("/").pop();
-    const entries = readdirSync(cacheDir, { withFileTypes: true });
-    // Be strict: only consider the exact gguf filename as the cached model file.
-    // The corresponding `${filename}.etag` is handled separately.
-    const cached = filename
-      ? entries
-          .filter((entry) => entry.isFile() && entry.name === filename)
-          .map((entry) => join(cacheDir, entry.name))
-      : [];
+
+    const deleteCandidate = (candidate: string | null | undefined): boolean => {
+      if (!candidate) return false;
+      const abs = resolve(candidate);
+      const absCache = resolve(cacheDir) + sep;
+      if (!abs.startsWith(absCache)) return false;
+      if (!existsSync(abs)) return false;
+      unlinkSync(abs);
+      return true;
+    };
 
     if (hfRef && filename) {
       const etagPath = join(cacheDir, `${filename}.etag`);
       const remoteEtag = await getRemoteEtag(hfRef);
       const localEtag = existsSync(etagPath) ? readFileSync(etagPath, "utf-8").trim() : null;
-      const shouldRefresh =
-        options.refresh || !remoteEtag || remoteEtag !== localEtag || cached.length === 0;
+      const shouldRefresh = options.refresh || !remoteEtag || remoteEtag !== localEtag;
 
       if (shouldRefresh) {
-        for (const candidate of cached) {
-          if (existsSync(candidate)) unlinkSync(candidate);
+        // Prefer using resolveModelFile()'s real path for cleanup; it may not match URI basename.
+        try {
+          const resolvedPath = await resolveModelFile(model, cacheDir);
+          if (deleteCandidate(resolvedPath)) refreshed = true;
+        } catch {}
+
+        // Back-compat: if cache uses URI basename, delete it too.
+        if (filename) {
+          if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
         }
+
         if (existsSync(etagPath)) unlinkSync(etagPath);
-        refreshed = cached.length > 0;
       }
     } else if (options.refresh && filename) {
-      for (const candidate of cached) {
-        if (existsSync(candidate)) unlinkSync(candidate);
-        refreshed = true;
-      }
+      if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
     }
 
     const path = await resolveModelFile(model, cacheDir);
