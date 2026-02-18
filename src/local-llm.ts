@@ -127,9 +127,11 @@ export async function pullModels(
     const hfRef = parseHfUri(model);
     const filename = model.split("/").pop();
     const entries = readdirSync(cacheDir, { withFileTypes: true });
+    // Be strict: only consider the exact gguf filename as the cached model file.
+    // The corresponding `${filename}.etag` is handled separately.
     const cached = filename
       ? entries
-          .filter((entry) => entry.isFile() && entry.name.includes(filename))
+          .filter((entry) => entry.isFile() && entry.name === filename)
           .map((entry) => join(cacheDir, entry.name))
       : [];
 
@@ -554,6 +556,10 @@ export class LlamaCpp implements LLM {
     this.touchActivity();
 
     const llama = await this.ensureLlama();
+    const ChatSession = await ensureLlamaChatSession();
+    if (!ChatSession) {
+      throw new Error("LlamaChatSession is not available. Ensure node-llama-cpp is installed.");
+    }
     await this.ensureGenerateModel();
 
     const includeLexical = options.includeLexical ?? true;
@@ -573,7 +579,7 @@ export class LlamaCpp implements LLM {
 
     const genContext = await this.generateModel!.createContext();
     const sequence = genContext.getSequence();
-    const session = new LlamaChatSession({ contextSequence: sequence });
+    const session = new ChatSession({ contextSequence: sequence });
 
     try {
       const result: string = await session.prompt(prompt, {
@@ -638,9 +644,12 @@ export class LlamaCpp implements LLM {
 
     const context = await this.ensureRerankContext();
 
-    const textToDoc = new Map<string, { file: string; index: number }>();
+    // Documents can have duplicate text; preserve one-to-many mapping.
+    const textToDocs = new Map<string, Array<{ file: string; index: number }>>();
     documents.forEach((doc, index) => {
-      textToDoc.set(doc.text, { file: doc.file, index });
+      const arr = textToDocs.get(doc.text) || [];
+      arr.push({ file: doc.file, index });
+      textToDocs.set(doc.text, arr);
     });
 
     const texts = documents.map((doc) => doc.text);
@@ -649,7 +658,12 @@ export class LlamaCpp implements LLM {
     const ranked = (await context.rankAndSort(query, texts)) as RankedItem[];
 
     const results: RerankDocumentResult[] = ranked.map((item: RankedItem) => {
-      const docInfo = textToDoc.get(item.document)!;
+      const candidates = textToDocs.get(item.document);
+      const docInfo = candidates && candidates.length > 0 ? candidates.shift()! : null;
+      if (!docInfo) {
+        // Shouldn't happen unless rankAndSort returns a string not present in the input.
+        throw new Error("Rerank produced a document that was not in the input set");
+      }
       return {
         file: docInfo.file,
         score: item.score,

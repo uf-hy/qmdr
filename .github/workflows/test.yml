@@ -170,7 +170,7 @@ jobs:
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           GITHUB_TOKEN: ${{ secrets.PAT }}
         with:
-          model: openai/gpt-5.2
+          model: openai/gpt-4o-mini
           use_github_token: true
           prompt: |
             You are fixing CI failures for this PR.
@@ -198,4 +198,3 @@ jobs:
             exit 0
           fi
           git push
-
