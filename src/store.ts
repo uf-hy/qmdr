@@ -762,8 +762,8 @@ export type Store = {
   toVirtualPath: (absolutePath: string) => string | null;
 
   // Search
-  searchFTS: (query: string, limit?: number, collectionId?: number) => SearchResult[];
-  searchVec: (query: string, model: string, limit?: number, collectionName?: string) => Promise<SearchResult[]>;
+  searchFTS: (query: string, limit?: number, collectionNames?: string[]) => SearchResult[];
+  searchVec: (query: string, model: string, limit?: number, collectionNames?: string[]) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
   expandQuery: (query: string, model?: string) => Promise<string[]>;
@@ -845,8 +845,8 @@ export function createStore(dbPath?: string): Store {
     toVirtualPath: (absolutePath: string) => toVirtualPath(db, absolutePath),
 
     // Search
-    searchFTS: (query: string, limit?: number, collectionId?: number) => searchFTS(db, query, limit, collectionId),
-    searchVec: (query: string, model: string, limit?: number, collectionName?: string) => searchVec(db, query, model, limit, collectionName),
+    searchFTS: (query: string, limit?: number, collectionNames?: string[]) => searchFTS(db, query, limit, collectionNames),
+    searchVec: (query: string, model: string, limit?: number, collectionNames?: string[]) => searchVec(db, query, model, limit, collectionNames),
 
     // Query expansion & reranking
     expandQuery: (query: string, model?: string) => expandQuery(query, model, db),
@@ -2124,7 +2124,7 @@ function buildFTS5Query(query: string): string | null {
   return unique.map(t => `"${t}"*`).join(' AND ');
 }
 
-export function searchFTS(db: Database, query: string, limit: number = 20, collectionId?: number): SearchResult[] {
+export function searchFTS(db: Database, query: string, limit: number = 20, collectionNames?: string[]): SearchResult[] {
   const ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
 
@@ -2143,12 +2143,10 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
   `;
   const params: (string | number)[] = [ftsQuery];
 
-  if (collectionId) {
-    // Note: collectionId is a legacy parameter that should be phased out
-    // Collections are now managed in YAML. For now, we interpret it as a collection name filter.
-    // This code path is likely unused as collection filtering should be done at CLI level.
-    sql += ` AND d.collection = ?`;
-    params.push(String(collectionId));
+  if (collectionNames && collectionNames.length > 0) {
+    const placeholders = collectionNames.map(() => '?').join(',');
+    sql += ` AND d.collection IN (${placeholders})`;
+    params.push(...collectionNames);
   }
 
   // bm25 lower is better; sort ascending.
@@ -2183,7 +2181,7 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
 // Vector Search
 // =============================================================================
 
-export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string, session?: ILLMSession): Promise<SearchResult[]> {
+export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionNames?: string[], session?: ILLMSession): Promise<SearchResult[]> {
   // Graceful degradation: if extensions are disabled, vector search is unavailable.
   if (!isSQLiteExtensionLoadingAllowed()) return [];
 
@@ -2233,9 +2231,10 @@ export async function searchVec(db: Database, query: string, model: string, limi
   `;
   const params: string[] = [...hashSeqs];
 
-  if (collectionName) {
-    docSql += ` AND d.collection = ?`;
-    params.push(collectionName);
+  if (collectionNames && collectionNames.length > 0) {
+    const placeholders = collectionNames.map(() => '?').join(',');
+    docSql += ` AND d.collection IN (${placeholders})`;
+    params.push(...collectionNames);
   }
 
   const docRows = db.prepare(docSql).all(...params) as {

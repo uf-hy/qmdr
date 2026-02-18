@@ -247,6 +247,47 @@ async function fetchWithRetry(
   return fetch(input, init);
 }
 
+// =============================================================================
+// Rerank prompt: loads from ~/.config/qmd/rerank-prompt.txt if it exists,
+// otherwise uses the built-in default. Edit the file to iterate on the prompt
+// without touching code — takes effect on the next search.
+//
+// The file supports two placeholders:
+//   {{query}}     → replaced with the user's search query
+//   {{documents}} → replaced with the numbered candidate documents
+// =============================================================================
+
+const DEFAULT_RERANK_PROMPT = `你是记忆检索助手。根据查询从候选文档中筛选并提取相关信息。
+
+查询：{{query}}
+
+候选文档：
+{{documents}}
+
+规则：
+1. 只提取与查询直接相关的文档内容，忽略不相关的
+2. 每篇用 [编号] 开头，后面跟提取的核心内容
+3. 用纯文本输出，不要JSON，不要markdown格式符
+4. 没有相关文档则输出 NONE
+5. 多篇文档内容相同或高度重复时，只提取第一篇，跳过后续重复
+6. 优先选择原始数据源（如日记、笔记、配置记录），跳过「对话/搜索会话记录」类文档——即包含 memory_search、tool_use、tool_result、assistant回复搜索结果 等痕迹的文档，这些是之前搜索产生的二手转述，不是一手信息
+
+示例格式：
+[0] 提取的核心内容
+[3] 另一篇的核心内容`;
+
+function buildRerankPrompt(query: string, docsText: string): string {
+  const configDir = process.env.QMD_CONFIG_DIR || join(homedir(), ".config", "qmd");
+  const promptPath = join(configDir, "rerank-prompt.txt");
+  let template = DEFAULT_RERANK_PROMPT;
+  try {
+    if (existsSync(promptPath)) {
+      template = readFileSync(promptPath, "utf-8");
+    }
+  } catch { /* ignore read errors, use default */ }
+  return template.replace(/\{\{query\}\}/g, query).replace(/\{\{documents\}\}/g, docsText);
+}
+
 export class RemoteLLM implements LLM {
   private readonly config: RemoteLLMConfig;
 
@@ -699,26 +740,7 @@ export class RemoteLLM implements LLM {
     const model = options.model || gm.model || "gemini-2.5-flash";
 
     const docsText = documents.map((doc, i) => `[${i}] ${doc.text}`).join("\n---\n");
-    const prompt = [
-      "你是记忆检索助手。根据查询从候选文档中筛选并提取相关信息。",
-      "",
-      `查询：${query}`,
-      "",
-      "候选文档：",
-      docsText,
-      "",
-      "规则：",
-      "1. 只提取与查询直接相关的文档内容，忽略不相关的",
-      "2. 每篇用 [编号] 开头，后面跟提取的核心内容",
-      "3. 用纯文本输出，不要JSON，不要markdown格式符",
-      "4. 没有相关文档则输出 NONE",
-      "5. 多篇文档内容相同或高度重复时，只提取第一篇，跳过后续重复",
-      "6. 优先选择原始数据源（如日记、笔记、配置记录），跳过「对话/搜索会话记录」类文档——即包含 memory_search、tool_use、tool_result、assistant回复搜索结果 等痕迹的文档，这些是之前搜索产生的二手转述，不是一手信息",
-      "",
-      "示例格式：",
-      "[0] 提取的核心内容",
-      "[3] 另一篇的核心内容",
-    ].join("\n");
+    const prompt = buildRerankPrompt(query, docsText);
 
     const resp = await fetch(`${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: "POST",

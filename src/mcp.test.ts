@@ -7,8 +7,10 @@
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 
-// Skip tests requiring remote API in CI
-const skipRemoteAPI = !!process.env.CI;
+// Skip tests requiring remote API by default.
+// Opt-in locally with: QMD_TEST_REMOTE=1 bun test
+// (CI should not depend on external providers.)
+const skipRemoteAPI = !!process.env.CI || process.env.QMD_TEST_REMOTE !== "1";
 
 import { Database } from "bun:sqlite";
 import * as sqliteVec from "sqlite-vec";
