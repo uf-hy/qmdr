@@ -549,7 +549,7 @@ async function updateCollections(allowRun: boolean): Promise<void> {
   const db = getDb();
   // Collections are defined in YAML; no duplicate cleanup needed.
 
-  // Clear Ollama cache on update
+  // Clear OLLAMA cache on update
   clearCache(db);
 
   const collections = listCollections(db);
@@ -1566,7 +1566,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   const collectionRootCmp = foldPathCase ? collectionRoot.toLowerCase() : collectionRoot;
   const collectionRootPrefixCmp = foldPathCase ? collectionRootPrefix.toLowerCase() : collectionRootPrefix;
 
-  // Clear Ollama cache on index
+  // Clear OLLAMA cache on index
   clearCache(db);
 
   // Collection name must be provided (from YAML)
