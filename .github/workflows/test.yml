@@ -122,3 +122,79 @@ jobs:
         with:
           name: qmdr-integration-logs
           path: /tmp/qmdr-ci-logs
+
+  autofix:
+    name: Auto-fix (AI) on CI failure
+    if: ${{ github.event_name == 'pull_request' && failure() }}
+    needs:
+      - typecheck
+      - quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout repository (PR head)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "opencode[bot]"
+          git config user.email "opencode[bot]@users.noreply.github.com"
+
+      - name: Count autofix attempts (max 5)
+        id: attempts
+        shell: bash
+        run: |
+          # Count commits made by previous autofix loops on this PR branch
+          ATTEMPTS=$(git log --oneline --grep='^autofix:' | wc -l | tr -d ' ')
+          echo "attempts=$ATTEMPTS" >> $GITHUB_OUTPUT
+          echo "Autofix attempts so far: $ATTEMPTS"
+          if [ "$ATTEMPTS" -ge 5 ]; then
+            echo "Reached max autofix attempts (5). Stop."
+            exit 1
+          fi
+
+      - name: Run OpenCode to fix CI
+        uses: anomalyco/opencode/github@latest
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          GITHUB_TOKEN: ${{ secrets.PAT }}
+        with:
+          model: openai/gpt-5.2
+          use_github_token: true
+          prompt: |
+            You are fixing CI failures for this PR.
+
+            GOAL:
+            - Make CI pass (typecheck + unit tests).
+
+            RULES:
+            - Keep changes minimal and directly related to fixing CI.
+            - Do not change unrelated files.
+            - Run these locally in the workflow environment before committing:
+              - bun install --frozen-lockfile
+              - bun run typecheck
+              - bun run test:ci
+            - If you cannot fix within the scope, explain why.
+
+            COMMIT:
+            - Commit your fix with message prefix: "autofix:" (e.g. "autofix: fix failing test")
+
+      - name: Push changes (if any)
+        shell: bash
+        run: |
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No changes to push."
+            exit 0
+          fi
+          git push
+
