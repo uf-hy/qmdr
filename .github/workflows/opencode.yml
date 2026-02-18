@@ -36,10 +36,37 @@ jobs:
           curl -fsSL https://opencode.ai/install | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Run OpenCode
+      - name: Create OpenCode config
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_BASE: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+        run: |
+          mkdir -p ~/.config/opencode
+          cat > ~/.config/opencode/opencode.json << 'EOF'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "providers": {
+              "custom": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "Custom OpenAI",
+                "options": {
+                  "baseURL": "${OPENAI_BASE_URL}",
+                  "apiKey": "${OPENAI_API_KEY}"
+                }
+              }
+            },
+            "defaultProvider": "custom",
+            "agents": {
+              "coder": {
+                "model": "gpt-5.2",
+                "reasoningEffort": "high"
+              }
+            }
+          }
+          EOF
+
+      - name: Run OpenCode
+        env:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
