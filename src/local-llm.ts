@@ -136,25 +136,28 @@ export async function pullModels(
       return true;
     };
 
+    let remoteEtag: string | null = null;
     if (hfRef && filename) {
       const etagPath = join(cacheDir, `${filename}.etag`);
-      const remoteEtag = await getRemoteEtag(hfRef);
+      const pathMapPath = join(cacheDir, `${filename}.path`);
+      remoteEtag = await getRemoteEtag(hfRef);
+
       const localEtag = existsSync(etagPath) ? readFileSync(etagPath, "utf-8").trim() : null;
-      const shouldRefresh = options.refresh || !remoteEtag || remoteEtag !== localEtag;
+      const mappedPath = existsSync(pathMapPath) ? readFileSync(pathMapPath, "utf-8").trim() : null;
+
+      // Keep local cache when remote ETag cannot be fetched (offline/HEAD blocked).
+      const shouldRefresh =
+        options.refresh === true || (remoteEtag !== null && localEtag !== null && remoteEtag !== localEtag);
 
       if (shouldRefresh) {
-        // Prefer using resolveModelFile()'s real path for cleanup; it may not match URI basename.
-        try {
-          const resolvedPath = await resolveModelFile(model, cacheDir);
-          if (deleteCandidate(resolvedPath)) refreshed = true;
-        } catch {}
+        // Delete only confirmed local files; do not call resolveModelFile() here (may download).
+        if (deleteCandidate(mappedPath)) refreshed = true;
 
         // Back-compat: if cache uses URI basename, delete it too.
-        if (filename) {
-          if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
-        }
+        if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
 
         if (existsSync(etagPath)) unlinkSync(etagPath);
+        if (existsSync(pathMapPath)) unlinkSync(pathMapPath);
       }
     } else if (options.refresh && filename) {
       if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
@@ -163,7 +166,8 @@ export async function pullModels(
     const path = await resolveModelFile(model, cacheDir);
     const sizeBytes = existsSync(path) ? statSync(path).size : 0;
     if (hfRef && filename) {
-      const remoteEtag = await getRemoteEtag(hfRef);
+      const pathMapPath = join(cacheDir, `${filename}.path`);
+      writeFileSync(pathMapPath, path + "\n", "utf-8");
       if (remoteEtag) {
         const etagPath = join(cacheDir, `${filename}.etag`);
         writeFileSync(etagPath, remoteEtag + "\n", "utf-8");
