@@ -39,7 +39,7 @@ jobs:
       - name: Run OpenCode
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          LOCAL_ENDPOINT: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_BASE_URL }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -47,7 +47,7 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           
           opencode run \
-            --model local.gpt-5.2 \
+            --model gpt-5.2 \
             --variant high \
             "根据以下需求修改代码：
             标题：$ISSUE_TITLE
