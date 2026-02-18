@@ -1,12 +1,8 @@
-name: OpenCode PR Review
+name: OpenCode PR Review + AutoFix (max 5)
 
 on:
-  issue_comment:
-    types: [created]
-  pull_request_review_comment:
-    types: [created]
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
 
 permissions:
   id-token: write
@@ -14,30 +10,137 @@ permissions:
   pull-requests: write
   issues: write
 
+concurrency:
+  group: opencode-pr-loop-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
-  opencode:
-    if: |
-      (github.event_name == 'pull_request') ||
-      (contains(github.event.comment.body, '/opencode') || contains(github.event.comment.body, '/oc'))
+  review_fix_loop:
+    if: ${{ github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+
     steps:
-      - name: Checkout
+      - name: Checkout PR head
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
           token: ${{ secrets.PAT }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
 
       - name: Configure Git
         run: |
           git config user.name "opencode[bot]"
           git config user.email "opencode[bot]@users.noreply.github.com"
 
-      - name: Run OpenCode
-        uses: anomalyco/opencode/github@latest
+      - name: Count attempts (max 5)
+        id: attempts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ATTEMPTS=$(git log --oneline --grep='^autofix:' | wc -l | tr -d ' ')
+          echo "attempts=$ATTEMPTS" >> $GITHUB_OUTPUT
+          echo "Attempts so far: $ATTEMPTS"
+          if [ "$ATTEMPTS" -ge 5 ]; then
+            echo "Reached max attempts (5)."
+            exit 1
+          fi
+
+      - name: Install OpenCode
+        shell: bash
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
+
+      - name: Review + Fix loop (up to 5)
+        shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           GITHUB_TOKEN: ${{ secrets.PAT }}
-        with:
-          model: openai/gpt-5.2
-          use_github_token: true
+          MODEL: openai/gpt-5.2
+          USE_GITHUB_TOKEN: "true"
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_BRANCH: ${{ github.base_ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Re-check attempts using current history (after checkout)
+          ATTEMPTS=$(git log --oneline --grep='^autofix:' | wc -l | tr -d ' ')
+          if [ "$ATTEMPTS" -ge 5 ]; then
+            echo "Reached max attempts (5)."
+            exit 1
+          fi
+
+          for i in 1 2 3 4 5; do
+            CUR=$(git log --oneline --grep='^autofix:' | wc -l | tr -d ' ')
+            if [ "$CUR" -ge 5 ]; then
+              echo "Stop: already hit 5 attempts."
+              exit 1
+            fi
+
+            echo "===== AI attempt $i (autofix so far: $CUR) ====="
+
+            # Let AI do review + fix + commit (autofix:) + push.
+            PROMPT=$(cat <<'PROMPT_EOF'
+You are working on an existing Pull Request.
+
+GOAL:
+- Make this PR merge cleanly into the base branch.
+- Make CI pass (bun run typecheck + bun run test:ci).
+- Do code review: identify real issues and fix them.
+
+RULES:
+- Keep changes minimal and relevant.
+- If branch is behind base, update it (merge/rebase) and resolve conflicts.
+- Always run:
+  - bun install --frozen-lockfile
+  - bun run typecheck
+  - bun run test:ci
+
+COMMIT/PUSH:
+- If you change anything, commit with message starting with "autofix:".
+- Push to the PR branch.
+
+OUTPUT:
+- Leave a PR comment summarizing what you fixed and whether CI should pass now.
+PROMPT_EOF
+)
+
+            PROMPT="$PROMPT" opencode github run || true
+
+            # Gate checks (these are the real pass/fail)
+            bun install --frozen-lockfile
+            bun run typecheck
+            bun run test:ci
+
+            echo "Checks passed. Done."
+
+            curl -s -X POST               -H "Authorization: token $GITHUB_TOKEN"               -H "Accept: application/vnd.github+json"               -d "{"body":"✅ AI Gate: PASS (attempt $i). typecheck + unit tests passed."}"               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" > /dev/null
+
+            exit 0
+          done
+
+          echo "Reached max attempts (5) without passing."
+          exit 1
+
+      - name: Comment FAIL status
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          curl -s -X POST             -H "Authorization: token $GH_TOKEN"             -H "Accept: application/vnd.github+json"             -d "{"body":"❌ AI Gate: FAIL (hit max 5 attempts or checks keep failing). Open Actions logs to see the exact error."}"             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" > /dev/null
