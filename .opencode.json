@@ -1,17 +1,16 @@
 {
   "$schema": "https://opencode.ai/config.schema.json",
   "providers": {
-    "custom": {
-      "id": "custom",
-      "name": "Custom API",
-      "type": "openai-compatible",
+    "openai": {
+      "id": "openai",
+      "name": "OpenAI",
       "options": {
         "baseURL": "https://clip.fufu.uno/v1"
       }
     }
   },
   "model": {
-    "provider": "custom",
+    "provider": "openai",
     "id": "gpt-5.2",
     "reasoningEffort": "xhigh"
   }
