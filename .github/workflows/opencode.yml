@@ -1,6 +1,6 @@
-# OpenCode CLI — Issue 触发自动改代码
-# 模型：gpt-5.2 | 思考：high
-name: OpenCode Agent
+# Codex CLI — Issue 触发自动改代码
+# 模型：gpt-5.2
+name: Codex Agent
 
 on:
   issues:
@@ -58,42 +58,11 @@ jobs:
 
       - name: Configure Git
         run: |
-          git config user.name "opencode[bot]"
-          git config user.email "opencode[bot]@users.noreply.github.com"
+          git config user.name "codex[bot]"
+          git config user.email "codex[bot]@users.noreply.github.com"
 
-      - name: Install OpenCode CLI
-        run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Create OpenCode config
-        env:
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-        run: |
-          mkdir -p ~/.config/opencode
-          python3 - <<'PY'
-          import os, json
-          from pathlib import Path
-
-          cfg = {
-            "$schema": "https://opencode.ai/config.json",
-            # 关键：OpenCode 的 --model 需要 provider/model 格式
-            "model": "openai/gpt-5.2",
-            # 关键：用 config 覆盖 OpenAI baseURL 指向你的中转站
-            "provider": {
-              "openai": {
-                "options": {
-                  "baseURL": os.environ["OPENAI_BASE_URL"].rstrip("/")
-                }
-              }
-            }
-          }
-
-          conf_dir = Path.home() / ".config" / "opencode"
-          conf_dir.mkdir(parents=True, exist_ok=True)
-          (conf_dir / "opencode.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
-          (conf_dir / "opencode.jsonc").write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
-          PY
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
 
       - name: Collect PR reviewer feedback (latest)
         id: feedback
@@ -114,17 +83,14 @@ jobs:
             core.setOutput('rounds', String(rounds));
             core.setOutput('text', latest ? latest.body : '');
 
-      - name: Run OpenCode
+      - name: Build Codex prompt
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           REVIEW_FEEDBACK: ${{ steps.feedback.outputs.text }}
           REVIEW_ROUNDS: ${{ steps.feedback.outputs.rounds }}
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
-
           python3 - <<'PY'
           import os
           from pathlib import Path
@@ -144,9 +110,10 @@ jobs:
           parts.append('RULES:')
           parts.append('1. ONLY modify files listed in the issue\'s \'Scope\' section (if any)')
           parts.append('2. Focus on: correctness, performance, robustness, clean code')
-          parts.append('3. Run \'bun test\' after changes to verify nothing breaks')
-          parts.append('4. Keep changes minimal and focused on the issue description')
-          parts.append(f'5. Commit with message: \'fix: <short description> (closes #{num})\'')
+          parts.append('3. 禁止读取/遍历 *.test.ts、docs、node_modules；只处理 scope 文件')
+          parts.append('4. Run \'bun test\' after changes to verify nothing breaks')
+          parts.append('5. Keep changes minimal and focused on the issue description')
+          parts.append(f'6. Commit with message: \'fix: <short description> (closes #{num})\'')
 
           if feedback:
             parts.append('')
@@ -154,32 +121,35 @@ jobs:
             parts.append(f'PR Reviewer 反馈（累计 {rounds} 轮；如有 Blocking 必须优先解决）：')
             parts.append(feedback)
 
-          prompt='\n'.join(parts)
-          Path('/tmp/opencode_prompt.txt').write_text(prompt, encoding='utf-8')
+          Path('/tmp/codex_prompt.txt').write_text('\n'.join(parts), encoding='utf-8')
           PY
 
-          # 用附件方式传入长 prompt，避免 shell 引号/换行被吃掉
-          timeout 50m opencode run \
-            --model openai/gpt-5.2 \
-            --variant xhigh \
-            --file /tmp/opencode_prompt.txt \
-            -- \
-            "按附件 opencode_prompt.txt 的要求修改代码。"
+      - name: Run Codex
+        env:
+          CUSTOM_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          timeout 45m codex \
+            -c 'model_providers.custom_openai.name="Custom OpenAI"' \
+            -c 'model_providers.custom_openai.base_url="${{ secrets.OPENAI_BASE_URL }}"' \
+            -c 'model_providers.custom_openai.env_key="CUSTOM_OPENAI_KEY"' \
+            -c 'model_provider="custom_openai"' \
+            exec --full-auto -m gpt-5.2 \
+            - < /tmp/codex_prompt.txt
 
       - name: Create PR
         id: pr
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          branch: opencode/issue-${{ github.event.issue.number }}
-          title: "🛠️ OpenCode: ${{ github.event.issue.title }}"
+          branch: codex/issue-${{ github.event.issue.number }}
+          title: "🤖 Codex: ${{ github.event.issue.title }}"
           body: |
-            由 OpenCode CLI (gpt-5.2, thinking: high) 自动生成
+            由 Codex CLI (gpt-5.2) 自动生成
             对应 Issue #${{ github.event.issue.number }}
             
             Closes #${{ github.event.issue.number }}
-          commit-message: "feat: opencode auto-fix #${{ github.event.issue.number }}"
-          labels: agent-opencode,auto-pr
+          commit-message: "feat: codex auto-fix #${{ github.event.issue.number }}"
+          labels: agent-codex,auto-pr
 
       - name: Comment on issue
         if: steps.pr.outputs.pull-request-number
@@ -189,7 +159,7 @@ jobs:
           script: |
             const issueNum = ${{ github.event.issue.number }};
             const prNum = ${{ steps.pr.outputs.pull-request-number }};
-            const msg = `✅ OpenCode 已创建 PR #${prNum}\n\n请查看并合并。`;
+            const msg = `✅ Codex 已创建 PR #${prNum}\n\n请查看并合并。`;
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
