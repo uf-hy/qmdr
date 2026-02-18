@@ -2,6 +2,11 @@
  * llm.ts - LLM abstraction layer for QMD
  */
 
+
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 // =============================================================================
 // Embedding Formatting Functions
 // =============================================================================
