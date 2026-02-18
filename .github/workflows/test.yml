@@ -89,6 +89,13 @@ jobs:
         id: precheck
         shell: bash
         run: |
+          # PR 上不跑外部模型/配额相关的 smoke test：避免 key/限流导致“假红”。
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping integration smoke test on pull requests."
+            exit 0
+          fi
+
           if [ -z "${QMD_SILICONFLOW_API_KEY}" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "QMD_SILICONFLOW_API_KEY is empty; skipping integration smoke test."
