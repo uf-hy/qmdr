@@ -1,4 +1,4 @@
-name: Issue Handler (apply PR fixes from review feedback) - GPT-5.2 xhigh
+name: PR Handler (apply fixes from AI feedback) - GPT-5.2 xhigh
 
 on:
   issue_comment:
@@ -11,61 +11,40 @@ permissions:
   id-token: write
 
 concurrency:
-  group: issue-fix-${{ github.event.issue.number }}
+  group: pr-fix-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
   fix:
     if: |
-      github.event.issue.pull_request == null &&
-      contains(github.event.comment.body, '#AI_PR_REVIEW_FEEDBACK')
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '#AI_LOOP_FEEDBACK')
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
     steps:
-      - name: Parse feedback
-        id: parse
+      - name: Resolve PR context
+        id: ctx
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PAT }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const issueNumber = context.payload.issue.number;
-            const body = context.payload.comment.body || '';
-
-            const prMatch = body.match(/\bPR:\s*(\d+)\b/i);
-            const roundMatch = body.match(/\bROUND:\s*(\d+)\s*\/\s*5\b/i);
-
-            if (!prMatch) {
-              core.setFailed('No PR number found in feedback comment. Expected: PR: <num>');
-              return;
-            }
-
-            const prNumber = Number(prMatch[1]);
-            const round = roundMatch ? Number(roundMatch[1]) : 1;
-
-            if (round > 5) {
-              core.info('Round > 5; stopping.');
-              return;
-            }
-
+            const prNumber = context.payload.issue.number;
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-
-            core.setOutput('issue_number', String(issueNumber));
             core.setOutput('pr_number', String(prNumber));
-            core.setOutput('round', String(round));
             core.setOutput('head_ref', pr.head.ref);
             core.setOutput('head_sha', pr.head.sha);
             core.setOutput('head_repo', pr.head.repo.full_name);
 
-      - name: Checkout PR head
+      - name: Checkout PR head (branch)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT }}
-          repository: ${{ steps.parse.outputs.head_repo }}
-          ref: ${{ steps.parse.outputs.head_ref }}
+          repository: ${{ steps.ctx.outputs.head_repo }}
+          ref: ${{ steps.ctx.outputs.head_ref }}
 
       - name: Configure Git
         run: |
@@ -82,40 +61,22 @@ jobs:
           model: openai/gpt-5.2
           use_github_token: true
           prompt: |
-            You are the issue handler. You MUST apply code changes to address the PR review feedback.
+            You are the PR handler. You MUST implement the changes requested by the latest #AI_LOOP_FEEDBACK comment.
 
-            Context:
-            - Issue: #${{ steps.parse.outputs.issue_number }}
-            - PR: #${{ steps.parse.outputs.pr_number }}
-            - Round: ${{ steps.parse.outputs.round }}/5
+            HARD RULES:
+            - Only fix what the feedback asks.
+            - Keep changes minimal.
 
-            Task:
-            - Read the latest issue comment that contains #AI_PR_REVIEW_FEEDBACK and implement the requested fixes.
-            - Keep changes minimal and strictly related to the feedback.
+            Required verification:
+            - bun install --frozen-lockfile
+            - bun run typecheck
+            - bun run test:ci
 
-            Required:
-            - Run: bun install --frozen-lockfile
-            - Run: bun run typecheck
-            - Run: bun run test:ci
-
-            Commit:
-            - If you changed anything, commit with message starting with: "autofix:".
+            Commit/push:
+            - Commit message must start with: "autofix:".
             - Push to the PR branch.
 
-      - name: Fallback commit + push (if OpenCode left uncommitted changes)
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git diff --quiet && git diff --cached --quiet; then
-            echo "No local changes."
-            exit 0
-          fi
-          git add -A
-          git commit -m "autofix: apply review feedback (round ${{ steps.parse.outputs.round }})"
-          git pull --rebase origin "${{ steps.parse.outputs.head_ref }}" || true
-          git push origin HEAD:"${{ steps.parse.outputs.head_ref }}"
-
-      - name: Trigger PR feedbacker (/opencode)
+      - name: Trigger next review (/opencode)
         if: ${{ always() }}
         uses: actions/github-script@v7
         with:
@@ -123,29 +84,5 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const prNumber = Number('${{ steps.parse.outputs.pr_number }}');
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: prNumber,
-              body: '/opencode',
-            });
-
-      - name: Notify issue
-        if: ${{ always() }}
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PAT }}
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const issueNumber = Number('${{ steps.parse.outputs.issue_number }}');
-            const prNumber = Number('${{ steps.parse.outputs.pr_number }}');
-            const round = '${{ steps.parse.outputs.round }}';
-
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: issueNumber,
-              body: `#AI_PR_FIX_RESULT\nPR: ${prNumber}\nROUND: ${round}/5\nSTATUS: done\n\nI pushed fixes (or found no changes). I also commented /opencode on the PR to trigger the feedbacker.`
-            });
+            const prNumber = Number('${{ steps.ctx.outputs.pr_number }}');
+            await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: '/opencode' });

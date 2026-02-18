@@ -1,8 +1,6 @@
 name: PR Feedbacker (OpenCode Review) - GPT-5.2 xhigh
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
 
@@ -12,22 +10,14 @@ permissions:
   issues: write
 
 concurrency:
-  group: pr-feedback-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
-  cancel-in-progress: true
+  group: pr-feedback-${{ github.event.issue.number }}
+  cancel-in-progress: false
 
 jobs:
   review:
     if: |
-      (
-        github.event_name == 'pull_request' &&
-        github.event.pull_request.draft == false &&
-        github.event.pull_request.head.repo.full_name == github.repository
-      ) ||
-      (
-        github.event_name == 'issue_comment' &&
-        github.event.issue.pull_request &&
-        (contains(github.event.comment.body, '/opencode') || contains(github.event.comment.body, '/oc'))
-      )
+      github.event.issue.pull_request &&
+      (contains(github.event.comment.body, '/opencode') || contains(github.event.comment.body, '/oc'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -40,10 +30,7 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-
-            const prNumber = context.eventName === 'pull_request'
-              ? context.payload.pull_request.number
-              : context.payload.issue.number;
+            const prNumber = context.payload.issue.number;
 
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
 
@@ -76,30 +63,27 @@ jobs:
           use_github_token: true
           prompt: |
             <!-- OPENCODE_REVIEW -->
-            You are the PR feedbacker. You must ONLY review; you MUST NOT modify any code.
+            Role: PR feedbacker (review ONLY).
 
-            Hard rules:
-            - Do NOT edit files.
-            - Do NOT commit.
-            - Do NOT push.
+            HARD RULES:
+            - DO NOT edit any file.
+            - DO NOT commit.
+            - DO NOT push.
 
-            Output format (must be included verbatim):
+            Output format (include verbatim):
             <!-- OPENCODE_REVIEW -->
             VERDICT: PASS | NEEDS_CHANGES
             SUMMARY:
-            - <plain Chinese summary of what PR changes>
+            - <plain Chinese summary>
             FINDINGS:
-            - <concrete issue 1: file + function/line-range + why + expected change>
-            - <issue 2...>
+            - <file + function/line-range + why + expected change>
             ACTION_ITEMS:
             - <actionable fix 1>
-            - <fix 2...>
+            - <fix 2>
 
-            Notes:
-            - Model MUST be openai/gpt-5.2.
-            - Reasoning effort should follow repo config (.opencode.json = xhigh).
+            Model MUST be openai/gpt-5.2 (repo config sets xhigh).
 
-      - name: Post review result (PR review + issue feedback)
+      - name: Convert review comment -> formal result + feedback loop (max 5)
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PAT }}
@@ -109,20 +93,16 @@ jobs:
             const prNumber = Number('${{ steps.ctx.outputs.pr_number }}');
             const issueNumber = Number('${{ steps.ctx.outputs.issue_number }}' || '0');
 
-            // Fetch latest PR comments and find the latest OPENCODE_REVIEW block
-            const comments = await github.paginate(github.rest.issues.listComments, {
+            const marker = '<!-- OPENCODE_REVIEW -->';
+
+            const prComments = await github.paginate(github.rest.issues.listComments, {
               owner,
               repo,
               issue_number: prNumber,
               per_page: 100,
             });
 
-            const marker = '<!-- OPENCODE_REVIEW -->';
-            const reviewComment = comments
-              .slice()
-              .reverse()
-              .find(c => (c.body || '').includes(marker));
-
+            const reviewComment = prComments.slice().reverse().find(c => (c.body || '').includes(marker));
             if (!reviewComment) {
               core.setFailed('No OPENCODE_REVIEW comment found on PR.');
               return;
@@ -132,41 +112,34 @@ jobs:
             const verdictMatch = body.match(/VERDICT:\s*(PASS|NEEDS_CHANGES)/i);
             const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : 'NEEDS_CHANGES';
 
-            // Submit a formal GitHub Review to satisfy branch protection (1 approval required)
-            const event = verdict === 'PASS' ? 'APPROVE' : 'REQUEST_CHANGES';
-            await github.rest.pulls.createReview({
-              owner,
-              repo,
-              pull_number: prNumber,
-              event,
-              body: `Automated AI review result (OpenCode):\n\n${body}`,
-            });
-
-            // If linked issue exists and NEEDS_CHANGES, post feedback to the issue to trigger the issue handler.
-            if (issueNumber && verdict === 'NEEDS_CHANGES') {
-              const issueComments = await github.paginate(github.rest.issues.listComments, {
+            // If PASS: create a formal APPROVE review (to satisfy branch protection).
+            if (verdict === 'PASS') {
+              await github.rest.pulls.createReview({
                 owner,
                 repo,
-                issue_number: issueNumber,
-                per_page: 100,
+                pull_number: prNumber,
+                event: 'APPROVE',
+                body: `Automated AI review (OpenCode)\n\n${body}`,
               });
-              const rounds = issueComments.filter(c => (c.body || '').includes('#AI_PR_REVIEW_FEEDBACK')).length;
-              const nextRound = rounds + 1;
+              return;
+            }
 
-              if (nextRound > 5) {
-                await github.rest.issues.createComment({
-                  owner,
-                  repo,
-                  issue_number: issueNumber,
-                  body: `#AI_PR_REVIEW_FEEDBACK\nROUND: ${nextRound}/5\nPR: ${prNumber}\nVERDICT: NEEDS_CHANGES\n\nSTOP: reached max 5 rounds. Please fix manually.\n\n---\n${body}`,
-                });
-                return;
+            // NEEDS_CHANGES: create feedback comment (V2 marker) and mirror to linked issue.
+            const feedbackMarker = '#AI_LOOP_FEEDBACK';
+            const existing = prComments.filter(c => (c.body || '').includes(feedbackMarker)).length;
+            const nextRound = existing + 1;
+
+            if (nextRound > 5) {
+              const stopMsg = `${feedbackMarker}\nROUND: ${nextRound}/5\nPR: ${prNumber}\nVERDICT: NEEDS_CHANGES\n\nSTOP: reached max 5 rounds. Please fix manually.\n\n---\n${body}`;
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: stopMsg });
+              if (issueNumber) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: stopMsg });
               }
+              return;
+            }
 
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                body: `#AI_PR_REVIEW_FEEDBACK\nROUND: ${nextRound}/5\nPR: ${prNumber}\nBRANCH: ${{ steps.ctx.outputs.head_ref }}\nHEAD_SHA: ${{ steps.ctx.outputs.head_sha }}\nVERDICT: NEEDS_CHANGES\n\n---\n${body}`,
-              });
+            const msg = `${feedbackMarker}\nROUND: ${nextRound}/5\nPR: ${prNumber}\nBRANCH: ${{ steps.ctx.outputs.head_ref }}\nHEAD_SHA: ${{ steps.ctx.outputs.head_sha }}\nVERDICT: NEEDS_CHANGES\n\n---\n${body}`;
+            await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: msg });
+            if (issueNumber) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: msg });
             }
