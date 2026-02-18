@@ -96,7 +96,15 @@ import { join } from "path";
 
 // =============================================================================
 // Load config from ~/.config/qmd/.env (single source of truth)
-// Environment variables set externally take priority (won't be overwritten)
+//
+// QMD_ prefixed vars: .env WINS over inherited environment.
+//   → Why: When spawned by OpenClaw, the parent process may carry stale env
+//     vars (e.g. QMD_RERANK_PROVIDER=siliconflow from an old /etc/environment).
+//     The .env file is the user's explicit config and should be authoritative.
+//
+// All other vars: inherited environment wins (standard dotenv behavior).
+//   → Why: System vars like PATH, HOME, NO_COLOR, XDG_* should be controlled
+//     by the parent process / OS, not overridden by a QMD config file.
 // =============================================================================
 
 const qmdConfigDir = process.env.QMD_CONFIG_DIR || join(homedir(), ".config", "qmd");
@@ -110,8 +118,11 @@ if (existsSync(qmdEnvPath)) {
     if (eqIdx === -1) continue;
     const key = trimmed.slice(0, eqIdx).trim();
     const val = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
-    // Don't override existing env vars (system/process env takes priority)
-    if (!process.env[key]) {
+    if (key.startsWith("QMD_")) {
+      // QMD's own config: .env is the source of truth, always override
+      process.env[key] = val;
+    } else if (!process.env[key]) {
+      // Non-QMD vars: only set if not already present (standard dotenv)
       process.env[key] = val;
     }
   }
@@ -2121,12 +2132,28 @@ type OutputOptions = {
   limit: number;
   minScore: number;
   all?: boolean;
-  collection?: string;  // Filter by collection name (pwd suffix match)
+  collection?: string[];  // Filter by collection name(s)
   lineNumbers?: boolean; // Add line numbers to output
   context?: string;      // Optional context for query expansion
   profile?: boolean;     // Show per-step timing breakdown
   verbose?: boolean;     // Show detailed debug output (chunk selection, reranker scores, etc.)
 };
+
+// Validate -c collection names: skip missing ones with a warning instead of hard exit.
+// Returns the list of valid collection names, or undefined if none specified / all invalid.
+function resolveCollectionFilter(opts: OutputOptions): string[] | undefined {
+  if (!opts.collection || opts.collection.length === 0) return undefined;
+  const valid: string[] = [];
+  for (const name of opts.collection) {
+    const coll = getCollectionFromYaml(name);
+    if (coll) {
+      valid.push(name);
+    } else {
+      process.stderr.write(`Warning: collection '${name}' not found, skipping\n`);
+    }
+  }
+  return valid.length > 0 ? valid : undefined;
+}
 
 // Highlight query terms in text (skip short words < 3 chars)
 function highlightTerms(text: string, query: string): string {
@@ -2348,21 +2375,11 @@ function search(query: string, opts: OutputOptions): void {
   const db = getDb();
 
   // Validate collection filter if specified
-  let collectionName: string | undefined;
-  if (opts.collection) {
-    const coll = getCollectionFromYaml(opts.collection);
-    if (!coll) {
-      console.error(`Collection not found: ${opts.collection}`);
-      closeDb();
-      process.exit(1);
-    }
-    collectionName = opts.collection;
-  }
+  const collectionNames = resolveCollectionFilter(opts);
 
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
-  // searchFTS accepts collection name as number parameter for legacy reasons (will be fixed in store.ts)
-  const results = searchFTS(db, query, fetchLimit, collectionName as any);
+  const results = searchFTS(db, query, fetchLimit, collectionNames);
 
   // Add context to results
   const resultsWithContext = results.map(r => ({
@@ -2389,16 +2406,7 @@ async function vectorSearch(query: string, opts: OutputOptions, model: string = 
   const db = getDb();
 
   // Validate collection filter if specified
-  let collectionName: string | undefined;
-  if (opts.collection) {
-    const coll = getCollectionFromYaml(opts.collection);
-    if (!coll) {
-      console.error(`Collection not found: ${opts.collection}`);
-      closeDb();
-      process.exit(1);
-    }
-    collectionName = opts.collection;
-  }
+  const collectionNames = resolveCollectionFilter(opts);
 
   const vecTableExists = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
   const hasVectorRuntime = isVectorRuntimeAvailable(db);
@@ -2440,7 +2448,7 @@ async function vectorSearch(query: string, opts: OutputOptions, model: string = 
     const allResults = new Map<string, { file: string; displayPath: string; title: string; body: string; score: number; hash: string }>();
 
     for (const q of vectorQueries) {
-      const vecResults = await searchVec(db, q, model, perQueryLimit, collectionName as any, undefined);
+      const vecResults = await searchVec(db, q, model, perQueryLimit, collectionNames, undefined);
       for (const r of vecResults) {
         const existing = allResults.get(r.filepath);
         if (!existing || r.score > existing.score) {
@@ -2542,22 +2550,13 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
   let _tStep = _t0;
 
   // Validate collection filter if specified
-  let collectionName: string | undefined;
-  if (opts.collection) {
-    const coll = getCollectionFromYaml(opts.collection);
-    if (!coll) {
-      console.error(`Collection not found: ${opts.collection}`);
-      closeDb();
-      process.exit(1);
-    }
-    collectionName = opts.collection;
-  }
+  const collectionNames = resolveCollectionFilter(opts);
 
   // Check index health and warn about issues
   checkIndexHealth(db);
 
   // Run initial BM25 search (will be reused for retrieval)
-  const initialFts = searchFTS(db, query, 20, collectionName as any);
+  const initialFts = searchFTS(db, query, 20, collectionNames);
   let hasVectors = isVectorRuntimeAvailable(db);
   if (_profile) { _timings.push({ step: "初始FTS", ms: Date.now() - _tStep, detail: `${initialFts.length} results` }); _tStep = Date.now(); }
 
@@ -2612,7 +2611,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     for (const q of ftsQueries) {
       if (!q) continue;
       searchPromises.push((async () => {
-        const ftsResults = searchFTS(db, q, 20, (collectionName || "") as any);
+        const ftsResults = searchFTS(db, q, 20, collectionNames);
         if (ftsResults.length > 0) {
           for (const r of ftsResults) {
             // Mutex for hashMap is not strictly needed as it's just adding values
@@ -2628,7 +2627,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
       for (const q of vectorQueries) {
         if (!q) continue;
         searchPromises.push((async () => {
-          const vecResults = await searchVec(db, q, embedModel, 20, (collectionName || "") as any, session);
+          const vecResults = await searchVec(db, q, embedModel, 20, collectionNames, session);
           if (vecResults.length > 0) {
             for (const r of vecResults) hashMap.set(r.filepath, r.hash);
             rankedLists.push(vecResults.map(r => ({ file: r.filepath, displayPath: r.displayPath, title: r.title, body: r.body || "", score: r.score })));
@@ -2906,7 +2905,7 @@ function parseCLI() {
       xml: { type: "boolean" },
       files: { type: "boolean" },
       json: { type: "boolean" },
-      collection: { type: "string", short: "c" },  // Filter by collection
+      collection: { type: "string", short: "c", multiple: true },  // Filter by collection(s)
       // Collection options
       name: { type: "string" },  // collection name
       mask: { type: "string" },  // glob pattern
@@ -2957,7 +2956,7 @@ function parseCLI() {
     limit: isAll ? 100000 : (values.n ? parseInt(String(values.n), 10) || defaultLimit : defaultLimit),
     minScore: values["min-score"] ? parseFloat(String(values["min-score"])) || 0 : 0,
     all: isAll,
-    collection: values.collection as string | undefined,
+    collection: values.collection as string[] | undefined,
     lineNumbers: !!values["line-numbers"],
     profile: !!values.profile,
     verbose: !!values.verbose,
