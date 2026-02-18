@@ -1,150 +1,145 @@
-name: OpenCode PR Review + AutoFix (max 5)
+name: PR Feedbacker (OpenCode Review) - GPT-5.2 xhigh
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
 
 permissions:
-  id-token: write
-  contents: write
+  contents: read
   pull-requests: write
   issues: write
 
 concurrency:
-  group: opencode-pr-loop-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  group: pr-feedback-${{ github.event.issue.number }}
+  cancel-in-progress: false
 
 jobs:
-  review_fix_loop:
-    if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository }}
+  review:
+    if: |
+      github.event.issue.pull_request != null &&
+      (contains(github.event.comment.body, '/opencode') || contains(github.event.comment.body, '/oc'))
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     steps:
+      - name: Resolve PR context
+        id: ctx
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.issue.number;
+
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+
+            const body = pr.body || '';
+            const m = body.match(/\b(?:Closes|Fixes|Resolves)\s+#(\d+)\b/i);
+            const issueNumber = m ? m[1] : '';
+
+            core.setOutput('pr_number', String(prNumber));
+            core.setOutput('issue_number', issueNumber);
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('head_repo', pr.head.repo.full_name);
+
       - name: Checkout PR head
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT }}
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ steps.ctx.outputs.head_repo }}
+          ref: ${{ steps.ctx.outputs.head_sha }}
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.6
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
-
-      - name: Configure Git
-        run: |
-          git config user.name "opencode[bot]"
-          git config user.email "opencode[bot]@users.noreply.github.com"
-
-      - name: Count attempts (max 5)
-        id: attempts
-        shell: bash
-        run: |
-          set -euo pipefail
-          ATTEMPTS=$(git log --oneline --grep='^autofix:' | wc -l | tr -d ' ')
-          echo "attempts=$ATTEMPTS" >> $GITHUB_OUTPUT
-          echo "Attempts so far: $ATTEMPTS"
-          if [ "$ATTEMPTS" -ge 5 ]; then
-            echo "Reached max attempts (5)."
-            exit 1
-          fi
-
-      - name: Install OpenCode
-        shell: bash
-        run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
-
-      - name: Review + Fix loop (up to 5)
-        shell: bash
+      - name: Run OpenCode (review only)
+        uses: anomalyco/opencode/github@latest
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           GITHUB_TOKEN: ${{ secrets.PAT }}
-          MODEL: openai/gpt-5.2
-          USE_GITHUB_TOKEN: "true"
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-          BASE_BRANCH: ${{ github.base_ref }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
+        with:
+          model: openai/gpt-5.2
+          use_github_token: true
+          prompt: |
+            <!-- OPENCODE_REVIEW -->
+            Role: PR feedbacker (review ONLY).
 
-          # Re-check attempts using current history (after checkout)
-          ATTEMPTS=$(git log --oneline --grep='^autofix:' | wc -l | tr -d ' ')
-          if [ "$ATTEMPTS" -ge 5 ]; then
-            echo "Reached max attempts (5)."
-            exit 1
-          fi
+            HARD RULES:
+            - DO NOT edit any file.
+            - DO NOT commit.
+            - DO NOT push.
 
-          for i in 1 2 3 4 5; do
-            CUR=$(git log --oneline --grep='^autofix:' | wc -l | tr -d ' ')
-            if [ "$CUR" -ge 5 ]; then
-              echo "Stop: already hit 5 attempts."
-              exit 1
-            fi
+            Output format (include verbatim):
+            <!-- OPENCODE_REVIEW -->
+            VERDICT: PASS | NEEDS_CHANGES
+            SUMMARY:
+            - <plain Chinese summary>
+            FINDINGS:
+            - <file + function/line-range + why + expected change>
+            ACTION_ITEMS:
+            - <actionable fix 1>
+            - <fix 2>
 
-            echo "===== AI attempt $i (autofix so far: $CUR) ====="
+            Model MUST be openai/gpt-5.2 (repo config sets xhigh).
 
-            # Let AI do review + fix + commit (autofix:) + push.
-            PROMPT=$(cat <<'PROMPT_EOF'
-You are working on an existing Pull Request.
+      - name: Convert review comment -> formal result + feedback loop (max 5)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = Number('${{ steps.ctx.outputs.pr_number }}');
+            const issueNumber = Number('${{ steps.ctx.outputs.issue_number }}' || '0');
 
-GOAL:
-- Make this PR merge cleanly into the base branch.
-- Make CI pass (bun run typecheck + bun run test:ci).
-- Do code review: identify real issues and fix them.
+            const marker = '<!-- OPENCODE_REVIEW -->';
 
-RULES:
-- Keep changes minimal and relevant.
-- If branch is behind base, update it (merge/rebase) and resolve conflicts.
-- Always run:
-  - bun install --frozen-lockfile
-  - bun run typecheck
-  - bun run test:ci
+            const prComments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
 
-COMMIT/PUSH:
-- If you change anything, commit with message starting with "autofix:".
-- Push to the PR branch.
+            const reviewComment = prComments.slice().reverse().find(c => (c.body || '').includes(marker));
+            if (!reviewComment) {
+              core.setFailed('No OPENCODE_REVIEW comment found on PR.');
+              return;
+            }
 
-OUTPUT:
-- Leave a PR comment summarizing what you fixed and whether CI should pass now.
-PROMPT_EOF
-)
+            const body = reviewComment.body || '';
+            const verdictMatch = body.match(/VERDICT:\s*(PASS|NEEDS_CHANGES)/i);
+            const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : 'NEEDS_CHANGES';
 
-            PROMPT="$PROMPT" opencode github run || true
+            // If PASS: create a formal APPROVE review (to satisfy branch protection).
+            if (verdict === 'PASS') {
+              await github.rest.pulls.createReview({
+                owner,
+                repo,
+                pull_number: prNumber,
+                event: 'APPROVE',
+                body: `Automated AI review (OpenCode)\n\n${body}`,
+              });
+              return;
+            }
 
-            # Gate checks (these are the real pass/fail)
-            bun install --frozen-lockfile
-            bun run typecheck
-            bun run test:ci
+            // NEEDS_CHANGES: create feedback comment (V2 marker) and mirror to linked issue.
+            const feedbackMarker = '#AI_LOOP_FEEDBACK';
+            const existing = prComments.filter(c => (c.body || '').includes(feedbackMarker)).length;
+            const nextRound = existing + 1;
 
-            echo "Checks passed. Done."
+            if (nextRound > 5) {
+              const stopMsg = `${feedbackMarker}\nROUND: ${nextRound}/5\nPR: ${prNumber}\nVERDICT: NEEDS_CHANGES\n\nSTOP: reached max 5 rounds. Please fix manually.\n\n---\n${body}`;
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: stopMsg });
+              if (issueNumber) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: stopMsg });
+              }
+              return;
+            }
 
-            curl -s -X POST   -H "Authorization: token $GITHUB_TOKEN"   -H "Accept: application/vnd.github+json"   -d @-   "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" > /dev/null <<EOF
-{"body":"✅ AI Gate: PASS (attempt $i). typecheck + unit tests passed."}
-EOF
-
-            exit 0
-          done
-
-          echo "Reached max attempts (5) without passing."
-          exit 1
-
-      - name: Comment FAIL status
-        if: ${{ failure() }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.PAT }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          curl -s -X POST   -H "Authorization: token $GH_TOKEN"   -H "Accept: application/vnd.github+json"   -d @-   "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" > /dev/null <<EOF
-{"body":"❌ AI Gate: FAIL (hit max 5 attempts or checks keep failing). Open Actions logs to see the exact error."}
-EOF
+            const msg = `${feedbackMarker}\nROUND: ${nextRound}/5\nPR: ${prNumber}\nBRANCH: ${{ steps.ctx.outputs.head_ref }}\nHEAD_SHA: ${{ steps.ctx.outputs.head_sha }}\nVERDICT: NEEDS_CHANGES\n\n---\n${body}`;
+            await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: msg });
+            if (issueNumber) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: msg });
+            }
