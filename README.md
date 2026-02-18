@@ -1,5 +1,7 @@
 # QMDR — QMD Remote
 
+QMDR：一个基于向量的文档检索和问答系统。使用说明见 [Install](#install)。
+
 > Remote-first fork of [tobi/qmd](https://github.com/tobi/qmd) — give your AI agent persistent memory with cloud APIs.
 
 [简体中文](docs/README-zh.md)
