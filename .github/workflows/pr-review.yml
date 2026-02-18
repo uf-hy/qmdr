@@ -127,21 +127,26 @@ jobs:
           VERDICT=$(python3 -c 'import json; print(json.load(open("/tmp/review_out.json"))["verdict"])')
           echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
 
-          echo "text<<EOF" >> $GITHUB_OUTPUT
-          cat /tmp/review.md >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # 避免多行 output 分隔符坑：把 review 写到临时文件并输出路径
+          cp /tmp/review.md "$RUNNER_TEMP/review.md"
+          echo "review_path=$RUNNER_TEMP/review.md" >> $GITHUB_OUTPUT
 
       - name: Submit PR review
         uses: actions/github-script@v7
         env:
-          REVIEW_TEXT: ${{ steps.codex.outputs.text }}
+          REVIEW_PATH: ${{ steps.codex.outputs.review_path }}
           VERDICT: ${{ steps.codex.outputs.verdict }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const fs = require('fs');
             const pr = context.payload.pull_request;
             const verdict = (process.env.VERDICT || '').trim().toUpperCase();
-            const body = process.env.REVIEW_TEXT || '(no review text)';
+            const reviewPath = process.env.REVIEW_PATH;
+            const body = reviewPath && fs.existsSync(reviewPath)
+              ? fs.readFileSync(reviewPath, 'utf8')
+              : '(no review text)';
+
             const event = verdict === 'APPROVE' ? 'APPROVE' : 'REQUEST_CHANGES';
 
             await github.rest.pulls.createReview({
@@ -156,11 +161,12 @@ jobs:
         if: ${{ steps.codex.outputs.verdict == 'REQUEST_CHANGES' }}
         uses: actions/github-script@v7
         env:
-          REVIEW_TEXT: ${{ steps.codex.outputs.text }}
+          REVIEW_PATH: ${{ steps.codex.outputs.review_path }}
         with:
           # 用 PAT 触发 issues:labeled 工作流，避免 GitHub 防递归机制吞事件
           github-token: ${{ secrets.PAT }}
           script: |
+            const fs = require('fs');
             const pr = context.payload.pull_request;
             const body = (pr.body || '');
             const m = body.match(/Closes\s+#(\d+)/i);
@@ -190,7 +196,11 @@ jobs:
               return;
             }
 
-            const reviewText = process.env.REVIEW_TEXT || '(no review text)';
+            const reviewPath = process.env.REVIEW_PATH;
+            const reviewText = reviewPath && fs.existsSync(reviewPath)
+              ? fs.readFileSync(reviewPath, 'utf8')
+              : '(no review text)';
+
             const commentBody = [
               marker,
               `### 🔁 PR Reviewer 反馈（第 ${nextRound}/5 轮）`,
