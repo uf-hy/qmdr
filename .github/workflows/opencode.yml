@@ -17,7 +17,7 @@ permissions:
 jobs:
   opencode:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     concurrency:
       group: opencode-issue-${{ github.event.issue.number }}
       cancel-in-progress: true
@@ -159,7 +159,7 @@ jobs:
           PY
 
           # 用附件方式传入长 prompt，避免 shell 引号/换行被吃掉
-          opencode run \
+          timeout 50m opencode run \
             --model openai/gpt-5.2 \
             --variant xhigh \
             --file /tmp/opencode_prompt.txt \
@@ -236,12 +236,13 @@ jobs:
             --data-urlencode text="$TEXT" \
             -d disable_web_page_preview=true >/dev/null || true
 
-      - name: Notify Telegram (issue run failed)
-        if: failure()
+      - name: Notify Telegram (issue run failed/cancelled)
+        if: failure() || cancelled()
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           ISSUE_NUM: ${{ github.event.issue.number }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
             exit 0
@@ -249,7 +250,7 @@ jobs:
           ISSUE_URL="${{ github.server_url }}/${{ github.repository }}/issues/${ISSUE_NUM}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           TEXT=$(cat <<EOF
-          ❌ [Issue处理失败] #${ISSUE_NUM}
+          ❌ [Issue处理异常] #${ISSUE_NUM} (${JOB_STATUS})
           ${ISSUE_URL}
           Run: ${RUN_URL}
           EOF
