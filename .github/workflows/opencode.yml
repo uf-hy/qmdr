@@ -72,7 +72,7 @@ jobs:
         id: feedback
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issueNum = context.payload.issue.number;
             const marker = '<!-- AI_PR_REVIEW_FEEDBACK -->';
@@ -157,7 +157,7 @@ jobs:
         if: steps.pr.outputs.pull-request-number
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issueNum = ${{ github.event.issue.number }};
             const prNum = ${{ steps.pr.outputs.pull-request-number }};
