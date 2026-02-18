@@ -1,5 +1,6 @@
 import { homedir } from "os";
 import { join, resolve, sep } from "path";
+import { createHash } from "crypto";
 import {
   existsSync,
   mkdirSync,
@@ -99,6 +100,13 @@ function parseHfUri(model: string): HfRef | null {
   return { repo, file };
 }
 
+function modelCacheKey(model: string): string {
+  // Unique, filesystem-safe key for per-model metadata (.etag/.path).
+  // Avoid collisions from basename-only keys (many models share `model.gguf`).
+  const hash = createHash("sha256").update(model).digest("hex").slice(0, 32);
+  return `model-${hash}`;
+}
+
 async function getRemoteEtag(ref: HfRef): Promise<string | null> {
   const url = `https://huggingface.co/${ref.repo}/resolve/main/${ref.file}`;
   try {
@@ -123,8 +131,11 @@ export async function pullModels(
   const results: PullResult[] = [];
   for (const model of models) {
     let refreshed = false;
+    let hadLocalModelBefore = false;
+    let localEtagBefore: string | null = null;
     const hfRef = parseHfUri(model);
     const filename = model.split("/").pop();
+    const cacheKey = modelCacheKey(model);
 
     const deleteCandidate = (candidate: string | null | undefined): boolean => {
       if (!candidate) return false;
@@ -146,14 +157,34 @@ export async function pullModels(
     };
 
     if (hfRef && filename) {
-      const etagPath = join(cacheDir, `${filename}.etag`);
-      const pathMapPath = join(cacheDir, `${filename}.path`);
+      const etagPath = join(cacheDir, `${cacheKey}.etag`);
+      const pathMapPath = join(cacheDir, `${cacheKey}.path`);
 
-      const localEtag = existsSync(etagPath) ? readFileSync(etagPath, "utf-8").trim() : null;
-      const mappedPath = existsSync(pathMapPath) ? readFileSync(pathMapPath, "utf-8").trim() : null;
-      const basenamePath = join(cacheDir, filename);
+      // Back-compat: old metadata used basename-only keys.
+      const legacyEtagPath = join(cacheDir, `${filename}.etag`);
+      const legacyPathMapPath = join(cacheDir, `${filename}.path`);
+      const legacyBasenamePath = join(cacheDir, filename);
+
+      let localEtag = existsSync(etagPath) ? readFileSync(etagPath, "utf-8").trim() : null;
+      if (localEtag === null && existsSync(legacyEtagPath)) {
+        // Migrate legacy basename metadata to unique per-model key.
+        localEtag = readFileSync(legacyEtagPath, "utf-8").trim();
+        writeFileSync(etagPath, localEtag + "\n", "utf-8");
+        unlinkSync(legacyEtagPath);
+      }
+      localEtagBefore = localEtag;
+
+      let mappedPath = existsSync(pathMapPath) ? readFileSync(pathMapPath, "utf-8").trim() : null;
+      if (mappedPath === null && existsSync(legacyPathMapPath)) {
+        // Migrate legacy basename metadata to unique per-model key.
+        mappedPath = readFileSync(legacyPathMapPath, "utf-8").trim();
+        writeFileSync(pathMapPath, mappedPath + "\n", "utf-8");
+        unlinkSync(legacyPathMapPath);
+      }
+
       const hasLocalModel =
-        (mappedPath ? existsSync(mappedPath) : false) || (basenamePath ? existsSync(basenamePath) : false);
+        (mappedPath ? existsSync(mappedPath) : false) || (legacyBasenamePath ? existsSync(legacyBasenamePath) : false);
+      hadLocalModelBefore = hasLocalModel;
 
       // Keep local cache when remote ETag cannot be fetched (offline/HEAD blocked).
       // Only refresh when explicitly requested, or when we can *confirm* the remote changed.
@@ -168,14 +199,18 @@ export async function pullModels(
         if (deleteCandidate(mappedPath)) refreshed = true;
 
         // Back-compat: if cache uses URI basename, delete it too.
-        if (deleteCandidate(basenamePath)) refreshed = true;
+        if (deleteCandidate(legacyBasenamePath)) refreshed = true;
 
         if (existsSync(etagPath)) unlinkSync(etagPath);
         if (existsSync(pathMapPath)) unlinkSync(pathMapPath);
+        if (existsSync(legacyEtagPath)) unlinkSync(legacyEtagPath);
+        if (existsSync(legacyPathMapPath)) unlinkSync(legacyPathMapPath);
       } else if (!hasLocalModel) {
         // If the model file is missing but metadata exists, clear it so we can re-establish mapping.
         if (existsSync(etagPath)) unlinkSync(etagPath);
         if (existsSync(pathMapPath)) unlinkSync(pathMapPath);
+        if (existsSync(legacyEtagPath)) unlinkSync(legacyEtagPath);
+        if (existsSync(legacyPathMapPath)) unlinkSync(legacyPathMapPath);
       }
     } else if (options.refresh && filename) {
       if (deleteCandidate(join(cacheDir, filename))) refreshed = true;
@@ -184,12 +219,18 @@ export async function pullModels(
     const path = await resolveModelFile(model, cacheDir);
     const sizeBytes = existsSync(path) ? statSync(path).size : 0;
     if (hfRef && filename) {
-      const pathMapPath = join(cacheDir, `${filename}.path`);
+      const pathMapPath = join(cacheDir, `${cacheKey}.path`);
       writeFileSync(pathMapPath, path + "\n", "utf-8");
       const etag = await fetchRemoteEtagOnce();
       if (etag) {
-        const etagPath = join(cacheDir, `${filename}.etag`);
-        writeFileSync(etagPath, etag + "\n", "utf-8");
+        // If we had a local model file but no local ETag, do not write a remote ETag
+        // unless we actually refreshed; otherwise we can incorrectly mark an unknown
+        // local file as "up to date".
+        const canWriteEtag = !(hadLocalModelBefore && localEtagBefore === null && !refreshed);
+        if (canWriteEtag) {
+          const etagPath = join(cacheDir, `${cacheKey}.etag`);
+          writeFileSync(etagPath, etag + "\n", "utf-8");
+        }
       }
     }
     results.push({ model, path, sizeBytes, refreshed });
@@ -207,7 +248,7 @@ export type LlamaCppConfig = {
   rerankModel?: string;
   modelCacheDir?: string;
   /**
-   * Inactivity timeout in ms before unloading contexts (default: 2 minutes, 0 to disable).
+   * Inactivity timeout in ms before unloading contexts (default: 5 minutes, 0 to disable).
    *
    * Per node-llama-cpp lifecycle guidance, we prefer keeping models loaded and only disposing
    * contexts when idle, since contexts (and their sequences) are the heavy per-session objects.
