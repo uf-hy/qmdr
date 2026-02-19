@@ -2202,40 +2202,49 @@ function getRemoteEmbedder(): RemoteLLM | null {
   const sfApiKey = process.env.QMD_SILICONFLOW_API_KEY;
   const gmApiKey = process.env.QMD_GEMINI_API_KEY;
   const oaApiKey = process.env.QMD_OPENAI_API_KEY;
+  const dsApiKey = process.env.QMD_DASHSCOPE_API_KEY;
   const rerankMode = (process.env.QMD_RERANK_MODE as 'llm' | 'rerank' | undefined) || 'llm';
   const sfLlmRerankModel = process.env.QMD_SILICONFLOW_LLM_RERANK_MODEL || process.env.QMD_LLM_RERANK_MODEL || 'zai-org/GLM-4.5-Air';
-  const hasAnyRemoteKey = !!sfApiKey || !!gmApiKey || !!oaApiKey;
+  const hasAnyRemoteKey = !!sfApiKey || !!gmApiKey || !!oaApiKey || !!dsApiKey;
   if (!hasAnyRemoteKey) {
     _remoteEmbedder = null;
     return null;
   }
   const embedProvider = (process.env.QMD_EMBED_PROVIDER as 'siliconflow' | 'openai' | undefined)
     || (sfApiKey ? 'siliconflow' : (oaApiKey ? 'openai' : undefined));
-  let rerankProvider: 'siliconflow' | 'gemini' | 'openai' | undefined;
-  const configuredRerankProvider = process.env.QMD_RERANK_PROVIDER as 'siliconflow' | 'gemini' | 'openai' | undefined;
+  let rerankProvider: 'siliconflow' | 'gemini' | 'openai' | 'dashscope' | undefined;
+  const configuredRerankProvider = process.env.QMD_RERANK_PROVIDER as 'siliconflow' | 'gemini' | 'openai' | 'dashscope' | undefined;
   if (rerankMode === 'rerank') {
-    if (sfApiKey) {
+    if (configuredRerankProvider === 'dashscope' && dsApiKey) {
+      rerankProvider = 'dashscope';
+    } else if (sfApiKey) {
       rerankProvider = 'siliconflow';
     } else if (configuredRerankProvider === 'gemini' && gmApiKey) {
       rerankProvider = 'gemini';
     } else if (configuredRerankProvider === 'openai' && oaApiKey) {
       rerankProvider = 'openai';
+    } else if (dsApiKey) {
+      rerankProvider = 'dashscope';
     } else {
       rerankProvider = gmApiKey ? 'gemini' : (oaApiKey ? 'openai' : undefined);
     }
   } else {
-    if (configuredRerankProvider === 'gemini' || configuredRerankProvider === 'openai') {
+    if (configuredRerankProvider === 'dashscope' && dsApiKey) {
+      rerankProvider = 'dashscope';
+    } else if (configuredRerankProvider === 'gemini' || configuredRerankProvider === 'openai') {
       rerankProvider = configuredRerankProvider;
     } else if (configuredRerankProvider === 'siliconflow') {
       rerankProvider = sfApiKey ? 'openai' : undefined;
     } else {
-      rerankProvider = sfApiKey ? 'openai' : (gmApiKey ? 'gemini' : (oaApiKey ? 'openai' : undefined));
+      // Prefer explicitly available keys; keep behavior aligned with llm-service.
+      rerankProvider = dsApiKey ? 'dashscope' : (sfApiKey ? 'openai' : (gmApiKey ? 'gemini' : (oaApiKey ? 'openai' : undefined)));
     }
   }
   const queryExpansionProvider = (process.env.QMD_QUERY_EXPANSION_PROVIDER as 'siliconflow' | 'gemini' | 'openai' | undefined)
     || (sfApiKey ? 'siliconflow' : (oaApiKey ? 'openai' : (gmApiKey ? 'gemini' : undefined)));
   _remoteEmbedder = new RemoteLLM({
     rerankProvider: rerankProvider || 'siliconflow',
+    rerankMode,
     embedProvider,
     queryExpansionProvider,
     siliconflow: {
@@ -2255,6 +2264,11 @@ function getRemoteEmbedder(): RemoteLLM | null {
       baseUrl: process.env.QMD_OPENAI_BASE_URL || process.env.QMD_SILICONFLOW_BASE_URL,
       model: process.env.QMD_OPENAI_MODEL || (sfApiKey ? sfLlmRerankModel : undefined),
       embedModel: process.env.QMD_OPENAI_EMBED_MODEL,
+    } : undefined,
+    dashscope: dsApiKey || rerankProvider === 'dashscope' ? {
+      apiKey: dsApiKey || '',
+      baseUrl: process.env.QMD_DASHSCOPE_BASE_URL,
+      model: process.env.QMD_DASHSCOPE_RERANK_MODEL,
     } : undefined,
   });
   return _remoteEmbedder;
