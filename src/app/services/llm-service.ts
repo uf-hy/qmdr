@@ -156,26 +156,26 @@ export function createLLMService(): LLMPort {
       const includeLexical = options?.includeLexical ?? true;
       const context = options?.context;
       const provider = (remoteConfig?.queryExpansionProvider || remoteConfig?.rerankProvider) as ProviderName | undefined;
-      const llm = ensureRemote();
 
-      // Query expansion is best-effort: on cooldown or failure, degrade to lexical-only.
+      // Query expansion is best-effort: if remote isn't configured / cooling down / fails,
+      // degrade to lexical-only.
       const lexicalFallback = (): Queryable[] => (includeLexical ? [{ type: "lex", text: query }] : []);
 
-      if (provider && hasRemoteProviderKey(provider)) {
-        if (isCoolingDown(provider)) {
-          return lexicalFallback();
-        }
-        try {
-          const out = await llm.expandQuery(query, { includeLexical, context });
-          recordSuccess(provider);
-          return out;
-        } catch (err) {
-          recordFailure(provider);
-          return lexicalFallback();
-        }
+      if (!remote || !provider || !hasRemoteProviderKey(provider)) {
+        return lexicalFallback();
+      }
+      if (isCoolingDown(provider)) {
+        return lexicalFallback();
       }
 
-      return lexicalFallback();
+      try {
+        const out = await remote.expandQuery(query, { includeLexical, context });
+        recordSuccess(provider);
+        return out;
+      } catch (err) {
+        recordFailure(provider);
+        return lexicalFallback();
+      }
     },
 
     async rerank(query: string, documents: RerankDocument[], session?: ILLMSession): Promise<{ file: string; score: number; extract?: string }[]> {
