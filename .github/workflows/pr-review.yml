@@ -31,22 +31,59 @@ jobs:
       - name: Install Codex CLI
         run: npm install -g @openai/codex
 
-      - name: Download PR diff
+      - name: Get previous review feedback (if any)
+        id: prev_review
+        uses: actions/github-script@v7
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_API_URL: ${{ github.event.pull_request.url }}
-        run: |
-          # 用 GitHub API 直接拿 diff，避免 checkout 深度/merge-base 坑
-          curl -fsSL \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github.v3.diff" \
-            "$PR_API_URL" > /tmp/pr.diff
-          wc -l /tmp/pr.diff
+          PR_BODY: ${{ github.event.pull_request.body }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const body = (pr.body || '');
+            const m = body.match(/Closes\s+#(\d+)/i);
+            if (!m) {
+              core.info('PR body has no Closes #<issue>, skip fetching previous review');
+              core.setOutput('has_prev', 'false');
+              core.setOutput('prev_text', '');
+              return;
+            }
+            const issue_number = Number(m[1]);
 
-      - name: Run Codex Review (structured JSON)
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            // 找最新的 AI_PR_REVIEW_FEEDBACK 评论
+            const marker = '<!-- AI_PR_REVIEW_FEEDBACK -->';
+            const prevComments = comments
+              .filter(c => (c.body || '').includes(marker))
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+            if (prevComments.length === 0) {
+              core.info('No previous AI review found');
+              core.setOutput('has_prev', 'false');
+              core.setOutput('prev_text', '');
+            } else {
+              const prev = prevComments[0].body;
+              // 提取 blocking 部分
+              const blockingMatch = prev.match(/Blocking:\n([\s\S]*?)(?=\n\n|\nSuggestions:|$)/);
+              const blockingText = blockingMatch ? blockingMatch[1].trim() : '';
+              core.setOutput('has_prev', 'true');
+              core.setOutput('prev_blocking', blockingText);
+              core.setOutput('prev_full', prev);
+              core.info(`Found previous review with ${blockingText.split('\n').filter(l=>l.startsWith('-')).length} blocking items`);
+            }
+
+      - name: Run Codex Review (structured JSON, with context)
         id: codex
         env:
           CUSTOM_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HAS_PREV: ${{ steps.prev_review.outputs.has_prev }}
+          PREV_BLOCKING: ${{ steps.prev_review.outputs.prev_blocking }}
         run: |
           set -euo pipefail
 
@@ -59,12 +96,14 @@ jobs:
               "verdict": {"type": "string", "enum": ["APPROVE", "REQUEST_CHANGES"]},
               "summary": {"type": "array", "items": {"type": "string"}},
               "blocking": {"type": "array", "items": {"type": "string"}},
-              "suggestions": {"type": "array", "items": {"type": "string"}}
+              "suggestions": {"type": "array", "items": {"type": "string"}},
+              "prev_blocking_checked": {"type": "array", "items": {"type": "string"}}
             },
-            "required": ["verdict", "summary", "blocking", "suggestions"]
+            "required": ["verdict", "summary", "blocking", "suggestions", "prev_blocking_checked"]
           }
           JSON
 
+          # 动态生成 prompt，包含上次的 blocking 问题
           cat > /tmp/review_prompt.txt <<'PROMPT'
           你是这个 PR 的 Reviewer。
 
@@ -77,6 +116,20 @@ jobs:
           - summary 用 1-3 条概括本 PR 做了什么。
           - suggestions 可以给可选改进（不强制）。
           PROMPT
+
+          # 如果有上次的 blocking 问题，追加到 prompt
+          if [ "$HAS_PREV" = "true" ] && [ -n "$PREV_BLOCKING" ]; then
+            cat >> /tmp/review_prompt.txt <<CONTEXT
+
+          === 上次 Review 的 Blocking 问题（请检查是否已修复）===
+          $PREV_BLOCKING
+
+          请在 prev_blocking_checked 数组中逐项说明每个问题的检查状态：
+          - 如果已修复，写 "✅ Fixed: <问题描述>"
+          - 如果仍然存在，写 "❌ Still present: <问题描述>"
+          - 如果部分修复，写 "⚠️ Partially fixed: <问题描述>"
+          CONTEXT
+          fi
 
           # 用 codex exec + output schema 强制产出机器可解析结果
           codex \
@@ -106,6 +159,14 @@ jobs:
           for x in data['summary']:
             md.append(f"- {x}")
           md.append("")
+          
+          # 如果有上次 blocking 检查，先显示这个
+          if data.get('prev_blocking_checked'):
+            md.append("=== 上次 Blocking 问题检查 ===")
+            for x in data['prev_blocking_checked']:
+              md.append(f"- {x}")
+            md.append("")
+          
           md.append("Blocking:")
           if data['blocking']:
             for x in data['blocking']:
