@@ -2271,7 +2271,11 @@ async function getEmbedding(text: string, model: string, isQuery: boolean, sessi
       "Remote embedding is not configured. Set at least one API key (e.g. QMD_SILICONFLOW_API_KEY or QMD_OPENAI_API_KEY)."
     );
   }
-  const result = await remote.embed(formattedText, { model, isQuery });
+  // Avoid passing the local-default model name into remote providers (e.g. OpenAI).
+  // If the caller uses DEFAULT_EMBED_MODEL, let RemoteLLM pick provider-appropriate defaults
+  // (or env-specific overrides like QMD_OPENAI_EMBED_MODEL / QMD_SILICONFLOW_EMBED_MODEL).
+  const effectiveModel = model === DEFAULT_EMBED_MODEL ? undefined : model;
+  const result = await remote.embed(formattedText, { model: effectiveModel, isQuery });
   return result?.embedding || null;
 }
 
