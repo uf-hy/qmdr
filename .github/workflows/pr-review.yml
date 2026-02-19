@@ -126,11 +126,20 @@ jobs:
           只做代码审查，不要修改任何文件，不要运行任何会改动仓库的命令。
           请阅读 diff 文件：/tmp/pr.diff，然后给出结构化结论。
 
-          规则：
-          - 如果存在必须修复的问题（会导致 bug、测试失败、破坏兼容、明显不符合需求），verdict=REQUEST_CHANGES，并把问题写到 blocking。
-          - 如果没有阻塞项，verdict=APPROVE，blocking 为空数组。
+          规则（请“宽松但不放水”，避免死犟）：
+          
+          【阻塞项（blocking）只允许写 P0 级别的问题】——满足任一条才可 REQUEST_CHANGES：
+          - 会导致 CI / bun test 失败、类型/构建失败
+          - 明确的运行时崩溃：常见命令（如 qmd --help/status/search/query/embed/vsearch）在合理默认配置下会直接崩
+          - 明确的安全问题（越权/注入/敏感信息泄露等）
+          - 明确违反本 PR 的目标（例如“移除本地 LLM”但仍残留本地依赖路径）
+          
+          【非 P0 的问题一律放 suggestions】包括但不限于：接口语义偏好、文案、结构/重构建议、可选优化、额外测试建议、破坏性变更的“是否需要迁移说明”（除非会导致用户无法运行基本命令或测试失败）。
+          
+          - 如果不确定或置信度不高：不要 blocking，放 suggestions。
+          - 多轮修复场景：若上次 blocking 已全部修复，且本轮未引入新的 P0，请直接 verdict=APPROVE。
           - summary 用 1-3 条概括本 PR 做了什么。
-          - suggestions 可以给可选改进（不强制）。
+          - suggestions 写可选改进（不强制）。
           PROMPT
 
           # 如果有上次的 blocking 问题，追加到 prompt
