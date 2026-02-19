@@ -458,7 +458,7 @@ export class RemoteLLM implements LLM {
   }
 
   async generate(_prompt: string, _options?: GenerateOptions): Promise<GenerateResult | null> {
-    throw new Error("RemoteLLM.generate() is not implemented. Use local LlamaCpp for generation.");
+    throw new Error("RemoteLLM.generate() is not implemented.");
   }
 
   async modelExists(_model: string): Promise<ModelInfo> {
@@ -1173,5 +1173,3 @@ export class RemoteLLM implements LLM {
     throw new Error(`Response does not contain valid JSON array: ${text.slice(0, 200)}`);
   }
 }
-
-export * from "./local-llm.js";
