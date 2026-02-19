@@ -157,37 +157,49 @@ export function createLLMService(): LLMPort {
       const context = options?.context;
       const provider = (remoteConfig?.queryExpansionProvider || remoteConfig?.rerankProvider) as ProviderName | undefined;
       const llm = ensureRemote();
+
+      // Query expansion is best-effort: on cooldown or failure, degrade to lexical-only.
+      const lexicalFallback = (): Queryable[] => (includeLexical ? [{ type: "lex", text: query }] : []);
+
       if (provider && hasRemoteProviderKey(provider) && (process.env.QMD_QUERY_EXPANSION_PROVIDER || process.env.QMD_EMBED_PROVIDER || process.env.QMD_OPENAI_API_KEY)) {
         if (isCoolingDown(provider)) {
-          // skip remote during cooldown
-        } else {
-          try {
-            const out = await llm.expandQuery(query, { includeLexical, context });
-            recordSuccess(provider);
-            return out;
-          } catch (err) {
-            recordFailure(provider);
-          }
+          return lexicalFallback();
+        }
+        try {
+          const out = await llm.expandQuery(query, { includeLexical, context });
+          recordSuccess(provider);
+          return out;
+        } catch (err) {
+          recordFailure(provider);
+          return lexicalFallback();
         }
       }
-      return llm.expandQuery(query, { includeLexical, context });
+
+      return lexicalFallback();
     },
 
     async rerank(query: string, documents: RerankDocument[], session?: ILLMSession): Promise<{ file: string; score: number; extract?: string }[]> {
       void session;
       const provider = remoteConfig?.rerankProvider as ProviderName | undefined;
       const llm = ensureRemote();
-      if (provider && hasRemoteProviderKey(provider)) {
-        if (!isCoolingDown(provider)) {
-          try {
-            const result = await llm.rerank(query, documents);
-            recordSuccess(provider);
-            return result.results.map(r => ({ file: r.file, score: r.score, extract: r.extract }));
-          } catch (err) {
-            recordFailure(provider);
-          }
+
+      if (provider) {
+        if (!hasRemoteProviderKey(provider)) {
+          throw new Error(`Remote rerank provider "${provider}" is selected but its API key is missing.`);
+        }
+        if (isCoolingDown(provider)) {
+          throw new Error(`Remote provider "${provider}" is cooling down. Please retry later.`);
+        }
+        try {
+          const result = await llm.rerank(query, documents);
+          recordSuccess(provider);
+          return result.results.map(r => ({ file: r.file, score: r.score, extract: r.extract }));
+        } catch (err) {
+          recordFailure(provider);
+          throw err;
         }
       }
+
       const result = await llm.rerank(query, documents);
       return result.results.map(r => ({ file: r.file, score: r.score, extract: r.extract }));
     },
@@ -196,18 +208,25 @@ export function createLLMService(): LLMPort {
       void session;
       const provider = remoteConfig?.embedProvider as ProviderName | undefined;
       const llm = ensureRemote();
-      if (provider && hasRemoteProviderKey(provider)) {
-        if (!isCoolingDown(provider)) {
-          try {
-            const result = await llm.embed(text, options);
-            if (!result) throw new Error("Remote embedding returned null");
-            recordSuccess(provider);
-            return result;
-          } catch (err) {
-            recordFailure(provider);
-          }
+
+      if (provider) {
+        if (!hasRemoteProviderKey(provider)) {
+          throw new Error(`Remote embed provider "${provider}" is selected but its API key is missing.`);
+        }
+        if (isCoolingDown(provider)) {
+          throw new Error(`Remote provider "${provider}" is cooling down. Please retry later.`);
+        }
+        try {
+          const result = await llm.embed(text, options);
+          if (!result) throw new Error("Remote embedding returned null");
+          recordSuccess(provider);
+          return result;
+        } catch (err) {
+          recordFailure(provider);
+          throw err;
         }
       }
+
       const result = await llm.embed(text, options);
       if (!result) throw new Error("Remote embedding returned null");
       return result;

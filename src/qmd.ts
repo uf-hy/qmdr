@@ -2897,6 +2897,9 @@ function showHelp(): void {
   console.log("  qmd doctor                    - Diagnose runtime env, providers/models, and vector dimensions");
   console.log("  qmd mcp                       - Start MCP server (for AI agent integration)");
   console.log("");
+  console.log("Note:");
+  console.log("  Local model support has been removed. Configure a remote provider via API keys (QMD_SILICONFLOW_API_KEY / QMD_OPENAI_API_KEY / QMD_GEMINI_API_KEY / QMD_DASHSCOPE_API_KEY).");
+  console.log("");
   console.log("Global options:");
   console.log("  --index <name>             - Use custom index name (default: index)");
   console.log("  --profile                  - Show per-step timing breakdown (query command)");
