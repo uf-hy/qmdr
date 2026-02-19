@@ -92,6 +92,8 @@ export type EmbedOptions = {
   model?: string;
   isQuery?: boolean;
   title?: string;
+  /** Override remote timeout for this operation (ms). */
+  timeoutMs?: number;
 };
 
 /**
@@ -101,6 +103,8 @@ export type GenerateOptions = {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  /** Override remote timeout for this operation (ms). */
+  timeoutMs?: number;
 };
 
 /**
@@ -108,6 +112,8 @@ export type GenerateOptions = {
  */
 export type RerankOptions = {
   model?: string;
+  /** Override remote timeout for this operation (ms). */
+  timeoutMs?: number;
 };
 
 /**
@@ -204,6 +210,12 @@ export type RemoteLLMConfig = {
   rerankMode?: 'llm' | 'rerank'; // 'llm' = chat model, 'rerank' = dedicated rerank API
   embedProvider?: 'siliconflow' | 'openai'; // remote embedding provider (optional)
   queryExpansionProvider?: 'siliconflow' | 'gemini' | 'openai'; // remote query expansion (optional)
+  /** Optional per-operation timeouts (ms). */
+  timeoutsMs?: {
+    embed?: number;
+    rerank?: number;
+    generate?: number;
+  };
   siliconflow?: {
     apiKey: string;
     baseUrl?: string; // default: https://api.siliconflow.cn/v1
@@ -230,26 +242,161 @@ export type RemoteLLMConfig = {
 };
 
 /**
- * Fetch with exponential backoff retry for rate-limited APIs (403/429).
- * Retries up to `maxRetries` times with exponential delay + jitter.
+ * Remote fetch with:
+ * - Timeout (AbortController)
+ * - Exponential backoff retry with jitter (maxAttempts default: 3)
+ * - Better errors (provider/op + HTTP status + response snippet)
+ * - Keep-alive hint header
  */
 async function fetchWithRetry(
   input: string | URL | Request,
-  init?: RequestInit,
-  maxRetries = 2,
-  baseDelayMs = 3000,
+  init: RequestInit | undefined,
+  opts: {
+    provider: string;
+    operation: "embed" | "rerank" | "generate";
+    timeoutMs?: number;
+    maxAttempts?: number;
+    baseDelayMs?: number;
+  },
 ): Promise<Response> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const resp = await fetch(input, init);
-    if (resp.ok || attempt === maxRetries) return resp;
-    // Only retry on rate limit errors (429), not auth-required 403
-    if (resp.status !== 429) return resp;
-    const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000;
-    process.stderr.write(`Rate limited (${resp.status}), retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${maxRetries})...\n`);
-    await new Promise(r => setTimeout(r, delay));
+  const provider = opts.provider;
+  const operation = opts.operation;
+  const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);
+  const baseDelayMs = Math.max(50, opts.baseDelayMs ?? 500);
+
+  const DEFAULT_TIMEOUTS_MS = {
+    embed: 30_000,
+    rerank: 15_000,
+    generate: 60_000,
+  } as const;
+
+  const envTimeoutMs = (() => {
+    const raw = process.env.QMD_TIMEOUT_MS;
+    if (!raw) return undefined;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+    return Math.round(parsed);
+  })();
+
+  const timeoutMs = Math.max(
+    1,
+    Math.round(
+      opts.timeoutMs
+        ?? envTimeoutMs
+        ?? (operation === "embed"
+          ? DEFAULT_TIMEOUTS_MS.embed
+          : operation === "rerank"
+            ? DEFAULT_TIMEOUTS_MS.rerank
+            : DEFAULT_TIMEOUTS_MS.generate)
+    )
+  );
+
+  const url = (() => {
+    if (typeof input === "string") return input;
+    if (input instanceof URL) return input.toString();
+    return input.url;
+  })();
+
+  const isRetryableStatus = (status: number): boolean =>
+    status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+
+  const getRetryAfterMs = (resp: Response): number | undefined => {
+    const raw = resp.headers.get("retry-after");
+    if (!raw) return undefined;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+    const date = Date.parse(raw);
+    if (!Number.isFinite(date)) return undefined;
+    const diff = date - Date.now();
+    return diff > 0 ? diff : undefined;
+  };
+
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  const backoffDelayMs = (attempt: number): number => {
+    const exp = Math.pow(2, Math.max(0, attempt - 1));
+    const jitter = Math.random() * baseDelayMs;
+    return Math.min(30_000, Math.round(baseDelayMs * exp + jitter));
+  };
+
+  const readBodySnippet = async (resp: Response, limit = 500): Promise<string> => {
+    try {
+      const text = await resp.text();
+      const trimmed = text.trim();
+      if (!trimmed) return "";
+      return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
+    } catch {
+      return "";
+    }
+  };
+
+  const initWithKeepAlive: RequestInit | undefined = init
+    ? {
+      ...init,
+      headers: (() => {
+        const headers = new Headers(init.headers);
+        if (!headers.has("connection")) headers.set("Connection", "keep-alive");
+        return headers;
+      })(),
+    }
+    : init;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs);
+
+    if (initWithKeepAlive?.signal) {
+      const parent = initWithKeepAlive.signal;
+      if (parent.aborted) {
+        controller.abort(parent.reason);
+      } else {
+        parent.addEventListener("abort", () => controller.abort(parent.reason), { once: true });
+      }
+    }
+
+    let resp: Response | null = null;
+    let fetchErr: unknown = null;
+
+    try {
+      resp = await fetch(input, { ...(initWithKeepAlive || {}), signal: controller.signal });
+    } catch (err) {
+      fetchErr = err;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (resp) {
+      if (resp.ok) return resp;
+
+      const status = resp.status;
+      const snippet = await readBodySnippet(resp);
+      const msg = `[${provider}] ${operation} failed (HTTP ${status}) ${url}${snippet ? ` — ${snippet}` : ""}`;
+
+      const retryable = isRetryableStatus(status);
+      if (!retryable || attempt === maxAttempts) {
+        throw new Error(msg);
+      }
+
+      const retryAfterMs = getRetryAfterMs(resp);
+      const delayMs = Math.max(retryAfterMs ?? 0, backoffDelayMs(attempt));
+      process.stderr.write(`${msg}\nRetrying in ${Math.round(delayMs / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...\n`);
+      await sleep(delayMs);
+      continue;
+    }
+
+    const errMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+    const msg = `[${provider}] ${operation} error ${url} — ${errMsg}`;
+
+    if (attempt === maxAttempts) {
+      throw new Error(msg);
+    }
+
+    const delayMs = backoffDelayMs(attempt);
+    process.stderr.write(`${msg}\nRetrying in ${Math.round(delayMs / 1000)}s (attempt ${attempt + 1}/${maxAttempts})...\n`);
+    await sleep(delayMs);
   }
-  // unreachable, but TypeScript needs it
-  return fetch(input, init);
+
+  throw new Error(`[${provider}] ${operation} failed: exhausted retries`);
 }
 
 // =============================================================================
@@ -357,7 +504,7 @@ export class RemoteLLM implements LLM {
           baseUrl: (sf.baseUrl || "https://api.siliconflow.cn/v1").replace(/\/$/, ""),
           model: sf.queryExpansionModel || "zai-org/GLM-4.5-Air",
         };
-        return this.rerankWithOpenAI(query, documents, options, openaiOverride);
+        return this.rerankWithOpenAI(query, documents, options, openaiOverride, "siliconflow");
       }
       return this.rerankWithSiliconflow(query, documents, options);
     }
@@ -398,13 +545,7 @@ export class RemoteLLM implements LLM {
           input: text,
           encoding_format: "float",
         }),
-      });
-
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
-        console.error(`SiliconFlow embed failed (${resp.status}): ${body}`);
-        return null;
-      }
+      }, { provider: "siliconflow", operation: "embed", timeoutMs: options?.timeoutMs ?? this.config.timeoutsMs?.embed });
 
       const data = await resp.json() as {
         data?: Array<{ embedding: number[] }>;
@@ -459,13 +600,7 @@ export class RemoteLLM implements LLM {
             input: batch,
             encoding_format: "float",
           }),
-        });
-
-        if (!resp.ok) {
-          const body = await resp.text().catch(() => "");
-          console.error(`SiliconFlow batch embed failed (${resp.status}): ${body}`);
-          continue;
-        }
+        }, { provider: "siliconflow", operation: "embed", timeoutMs: this.config.timeoutsMs?.embed });
 
         const data = await resp.json() as {
           data?: Array<{ embedding: number[]; index: number }>;
@@ -527,13 +662,7 @@ export class RemoteLLM implements LLM {
           max_tokens: 300,
           temperature: 0.7,
         }),
-      });
-
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
-        console.error(`SiliconFlow query expansion failed (${resp.status}): ${body}`);
-        return this.fallbackExpansion(query, includeLexical);
-      }
+      }, { provider: "siliconflow", operation: "generate", timeoutMs: this.config.timeoutsMs?.generate });
 
       const data = await resp.json() as {
         choices?: Array<{ message?: { content?: string } }>;
@@ -568,7 +697,7 @@ export class RemoteLLM implements LLM {
     ].join("\n");
 
     try {
-      const resp = await fetch(`${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      const resp = await fetchWithRetry(`${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
         method: "POST",
         headers: {
           "x-goog-api-key": gm.apiKey,
@@ -578,13 +707,7 @@ export class RemoteLLM implements LLM {
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: { temperature: 0.7, maxOutputTokens: 300 },
         }),
-      });
-
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
-        console.error(`Gemini query expansion failed (${resp.status}): ${body}`);
-        return this.fallbackExpansion(query, includeLexical);
-      }
+      }, { provider: "gemini", operation: "generate", timeoutMs: this.config.timeoutsMs?.generate });
 
       const data = await resp.json() as {
         candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
@@ -648,12 +771,7 @@ export class RemoteLLM implements LLM {
         documents: documents.map((d) => d.text),
         top_n: Math.max(1, documents.length),
       }),
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      throw new Error(`SiliconFlow rerank failed (${resp.status}): ${body}`);
-    }
+    }, { provider: "siliconflow", operation: "rerank", timeoutMs: options.timeoutMs ?? this.config.timeoutsMs?.rerank });
 
     const data = await resp.json() as {
       results?: Array<{ index: number; relevance_score: number }>;
@@ -702,12 +820,7 @@ export class RemoteLLM implements LLM {
         documents: documents.map((d) => d.text),
         top_n: Math.max(1, documents.length),
       }),
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      throw new Error(`Dashscope rerank failed (${resp.status}): ${body}`);
-    }
+    }, { provider: "dashscope", operation: "rerank", timeoutMs: options.timeoutMs ?? this.config.timeoutsMs?.rerank });
 
     const data = await resp.json() as {
       results?: Array<{ index: number; relevance_score: number }>;
@@ -747,7 +860,7 @@ export class RemoteLLM implements LLM {
     const docsText = documents.map((doc, i) => `[${i}] ${doc.text}`).join("\n---\n");
     const prompt = buildRerankPrompt(query, docsText);
 
-    const resp = await fetch(`${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    const resp = await fetchWithRetry(`${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: "POST",
       headers: {
         "x-goog-api-key": gm.apiKey,
@@ -762,12 +875,7 @@ export class RemoteLLM implements LLM {
           },
         },
       }),
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      throw new Error(`Gemini rerank failed (${resp.status}): ${body}`);
-    }
+    }, { provider: "gemini", operation: "rerank", timeoutMs: options.timeoutMs ?? this.config.timeoutsMs?.rerank });
 
     const data = await resp.json() as {
       candidates?: Array<{
@@ -833,7 +941,8 @@ export class RemoteLLM implements LLM {
     query: string,
     documents: RerankDocument[],
     options: RerankOptions,
-    openaiOverride?: { apiKey: string; baseUrl?: string; model?: string }
+    openaiOverride?: { apiKey: string; baseUrl?: string; model?: string },
+    providerName: string = "openai"
   ): Promise<RerankResult> {
     const oa = openaiOverride || this.config.openai;
     if (!oa?.apiKey) {
@@ -877,12 +986,7 @@ export class RemoteLLM implements LLM {
         temperature: 0,
         max_tokens: 2000,
       }),
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      throw new Error(`OpenAI rerank failed (${resp.status}): ${body}`);
-    }
+    }, { provider: providerName, operation: "rerank", timeoutMs: options.timeoutMs ?? this.config.timeoutsMs?.rerank });
 
     const data = await resp.json() as {
       choices?: Array<{ message?: { content?: string } }>;
@@ -926,12 +1030,7 @@ export class RemoteLLM implements LLM {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ model, input: text }),
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      throw new Error(`OpenAI embed failed (${resp.status}): ${body}`);
-    }
+    }, { provider: "openai", operation: "embed", timeoutMs: options?.timeoutMs ?? this.config.timeoutsMs?.embed });
 
     const data = await resp.json() as {
       data?: Array<{ embedding?: number[] }>;
@@ -963,13 +1062,7 @@ export class RemoteLLM implements LLM {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ model, input: batch }),
-        });
-
-        if (!resp.ok) {
-          const body = await resp.text().catch(() => "");
-          process.stderr.write(`OpenAI embedBatch failed (${resp.status}): ${body}\n`);
-          continue;
-        }
+        }, { provider: "openai", operation: "embed", timeoutMs: this.config.timeoutsMs?.embed });
 
         const data = await resp.json() as {
           data?: Array<{ embedding?: number[]; index?: number }>;
@@ -1021,13 +1114,7 @@ export class RemoteLLM implements LLM {
           max_tokens: 300,
           temperature: 0.7,
         }),
-      });
-
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
-        console.error(`OpenAI query expansion failed (${resp.status}): ${body}`);
-        return this.fallbackExpansion(query, includeLexical);
-      }
+      }, { provider: "openai", operation: "generate", timeoutMs: this.config.timeoutsMs?.generate });
 
       const data = await resp.json() as {
         choices?: Array<{ message?: { content?: string } }>;

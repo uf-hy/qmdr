@@ -379,53 +379,28 @@ function getRemoteLLM(): RemoteLLM | null {
   return remoteLLM;
 }
 
-// Backward-compat alias
-function getRemoteReranker(): RemoteLLM | null {
-  return getRemoteLLM();
-}
-
 // Rerank documents using cross-encoder model (local or remote)
 async function rerank(query: string, documents: { file: string; text: string }[], _model: string = DEFAULT_RERANK_MODEL, _db?: Database, session?: ILLMSession): Promise<{ file: string; score: number; extract?: string }[]> {
   if (documents.length === 0) return [];
 
   const total = documents.length;
-
-  // Try remote reranker first
-  const remote = getRemoteReranker();
-  if (remote) {
-    if (!_quietMode) process.stderr.write(`Reranking ${total} documents (remote: ${process.env.QMD_RERANK_PROVIDER})...\n`);
-    if (!_quietMode) progress.indeterminate();
-
-    const rerankDocs: RerankDocument[] = documents.map((doc) => ({
-      file: doc.file,
-      text: doc.text.slice(0, 4000),
-    }));
-
-    const result = await remote.rerank(query, rerankDocs);
-
-    if (!_quietMode) progress.clear();
-    if (!_quietMode) process.stderr.write("\n");
-
-    return result.results.map((r) => ({ file: r.file, score: r.score, extract: r.extract }));
+  if (!_quietMode) {
+    const configured = process.env.QMD_RERANK_PROVIDER;
+    process.stderr.write(`Reranking ${total} documents${configured ? ` (provider: ${configured})` : ""}...\n`);
+    progress.indeterminate();
   }
-
-  // Fall back to local LlamaCpp reranker
-  if (!_quietMode) process.stderr.write(`Reranking ${total} documents...\n`);
-  if (!_quietMode) progress.indeterminate();
 
   const rerankDocs: RerankDocument[] = documents.map((doc) => ({
     file: doc.file,
     text: doc.text.slice(0, 4000), // Truncate to context limit
   }));
 
-  const result = session
-    ? await session.rerank(query, rerankDocs)
-    : await getDefaultLlamaCpp().rerank(query, rerankDocs);
+  const result = await llmService.rerank(query, rerankDocs, session);
 
   if (!_quietMode) progress.clear();
   if (!_quietMode) process.stderr.write("\n");
 
-  return result.results.map((r) => ({ file: r.file, score: r.score }));
+  return result.map((r) => ({ file: r.file, score: r.score, extract: r.extract }));
 }
 
 function formatTimeAgo(date: Date): string {
@@ -2911,6 +2886,7 @@ function parseCLI() {
       mask: { type: "string" },  // glob pattern
       // Embed options
       force: { type: "boolean", short: "f" },
+      timeout: { type: "string" }, // embed/query remote timeout override
       // Update options
       pull: { type: "boolean" },  // git pull before update
       "allow-run": { type: "boolean" },
@@ -2971,6 +2947,22 @@ function parseCLI() {
   };
 }
 
+function parseTimeoutFlagToMs(raw: unknown): number | null {
+  if (raw === undefined || raw === null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  const m = s.match(/^(\d+(?:\.\d+)?)(ms|s|m)?$/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const unit = (m[2] || "").toLowerCase();
+  if (unit === "ms") return Math.round(n);
+  if (unit === "m") return Math.round(n * 60_000);
+  if (unit === "s") return Math.round(n * 1_000);
+  // No unit: heuristic (>=1000 => ms, else seconds)
+  return n >= 1000 ? Math.round(n) : Math.round(n * 1_000);
+}
+
 function showHelp(): void {
   console.log("Usage:");
   console.log("  qmd collection add [path] --name <name> --mask <pattern>  - Create/index collection");
@@ -2985,11 +2977,11 @@ function showHelp(): void {
   console.log("  qmd multi-get <pattern> [-l N] [--max-bytes N]  - Get multiple docs by glob or comma-separated list");
   console.log("  qmd status                    - Show index status and collections");
   console.log("  qmd update [--pull] [--allow-run] - Re-index all collections (--allow-run: run collection update commands)");
-  console.log("  qmd embed [-f]                - Create vector embeddings (800 tokens/chunk, 15% overlap)");
+  console.log("  qmd embed [-f] [--timeout N]  - Create vector embeddings (800 tokens/chunk, 15% overlap)");
   console.log("  qmd cleanup                   - Remove cache and orphaned data, vacuum DB");
   console.log("  qmd search <query>            - Full-text search (BM25)");
   console.log("  qmd vsearch <query>           - Vector similarity search");
-  console.log("  qmd query <query>             - Combined search with query expansion + reranking");
+  console.log("  qmd query <query> [--timeout N] - Combined search with query expansion + reranking");
   console.log("  qmd doctor                    - Diagnose runtime env, providers/models, and vector dimensions");
   console.log("  qmd mcp                       - Start MCP server (for AI agent integration)");
   console.log("");
@@ -3463,6 +3455,16 @@ if (import.meta.main) {
   if (!cli.command || cli.values.help) {
     showHelp();
     process.exit(cli.values.help ? 0 : 1);
+  }
+
+  const timeoutRaw = (cli.values as Record<string, unknown>).timeout;
+  if ((cli.command === "query" || cli.command === "embed") && timeoutRaw !== undefined) {
+    const timeoutMs = parseTimeoutFlagToMs(timeoutRaw);
+    if (timeoutMs === null) {
+      console.error(`Invalid --timeout value: ${String(timeoutRaw)} (examples: 30s, 30000ms, 1m, 15000)`);
+      process.exit(1);
+    }
+    process.env.QMD_TIMEOUT_MS = String(timeoutMs);
   }
 
   switch (cli.command) {
