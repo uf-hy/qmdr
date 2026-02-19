@@ -110,7 +110,7 @@ jobs:
           parts.append('RULES:')
           parts.append('1. ONLY modify files listed in the issue\'s \'Scope\' section (if any)')
           parts.append('2. Focus on: correctness, performance, robustness, clean code')
-          parts.append('3. 禁止读取/遍历 *.test.ts、docs、node_modules；只处理 scope 文件')
+          parts.append('3. 不要遍历 docs、node_modules；只处理 Scope 列出的文件（若 Scope 明确包含 *.test.ts，可修改这些测试文件以保证 bun test 通过）')
           parts.append('4. Run \'bun test\' after changes to verify nothing breaks')
           parts.append('5. Keep changes minimal and focused on the issue description')
           parts.append(f'6. Commit with message: \'fix: <short description> (closes #{num})\'')
