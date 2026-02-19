@@ -161,7 +161,7 @@ export function createLLMService(): LLMPort {
       // Query expansion is best-effort: on cooldown or failure, degrade to lexical-only.
       const lexicalFallback = (): Queryable[] => (includeLexical ? [{ type: "lex", text: query }] : []);
 
-      if (provider && hasRemoteProviderKey(provider) && (process.env.QMD_QUERY_EXPANSION_PROVIDER || process.env.QMD_EMBED_PROVIDER || process.env.QMD_OPENAI_API_KEY)) {
+      if (provider && hasRemoteProviderKey(provider)) {
         if (isCoolingDown(provider)) {
           return lexicalFallback();
         }
