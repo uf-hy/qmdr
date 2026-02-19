@@ -212,7 +212,9 @@ describe("MCP Server", () => {
     process.env.QMD_SILICONFLOW_BASE_URL = "https://example.invalid/v1";
 
     originalFetch = globalThis.fetch;
-    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+
+    // Bun's fetch type includes extra properties (e.g. preconnect). Provide them on the mock.
+    const mockFetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : (input instanceof URL ? input.toString() : input.url);
       const bodyText = typeof init?.body === "string" ? init.body : "";
       const bodyJson = bodyText ? (JSON.parse(bodyText) as any) : null;
@@ -259,7 +261,10 @@ describe("MCP Server", () => {
       }
 
       return new Response("Not found", { status: 404 });
-    };
+    }) as typeof fetch;
+    (mockFetch as any).preconnect = () => {};
+
+    globalThis.fetch = mockFetch;
 
     // Set up test config directory
     const configPrefix = join(tmpdir(), `qmd-mcp-config-${Date.now()}-${Math.random().toString(36).slice(2)}`);
