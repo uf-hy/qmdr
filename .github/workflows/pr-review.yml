@@ -193,34 +193,24 @@ jobs:
           cp /tmp/review.md "$RUNNER_TEMP/review.md"
           echo "review_path=$RUNNER_TEMP/review.md" >> $GITHUB_OUTPUT
 
-      - name: Submit PR review
+      - name: Submit PR review (as GITHUB_TOKEN)
+        if: github.event.pull_request.user.login != 'github-actions[bot]'
         uses: actions/github-script@v7
         env:
           REVIEW_PATH: ${{ steps.codex.outputs.review_path }}
           VERDICT: ${{ steps.codex.outputs.verdict }}
         with:
-          # 用你的 PAT 提交 review，让 Review 显示为 uf-hy（PR 作者是 GITHUB_TOKEN 创建的 bot，不会撞"自己审自己"）
-          github-token: ${{ secrets.PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             const pr = context.payload.pull_request;
             const verdict = (process.env.VERDICT || '').trim().toUpperCase();
             const reviewPath = process.env.REVIEW_PATH;
-            
-            console.log('DEBUG: VERDICT env =', process.env.VERDICT);
-            console.log('DEBUG: REVIEW_PATH env =', process.env.REVIEW_PATH);
-            console.log('DEBUG: verdict after trim =', verdict);
-            console.log('DEBUG: reviewPath exists =', reviewPath && fs.existsSync(reviewPath));
-            
-            if (!reviewPath || !fs.existsSync(reviewPath)) {
-              throw new Error(`Review file not found: ${reviewPath}`);
-            }
-            
-            const body = fs.readFileSync(reviewPath, 'utf8');
-            console.log('DEBUG: body length =', body.length);
+            const body = reviewPath && fs.existsSync(reviewPath)
+              ? fs.readFileSync(reviewPath, 'utf8')
+              : '(no review text)';
 
             const event = verdict === 'APPROVE' ? 'APPROVE' : 'REQUEST_CHANGES';
-            console.log('DEBUG: event =', event);
 
             await github.rest.pulls.createReview({
               owner: context.repo.owner,
@@ -229,6 +219,32 @@ jobs:
               event,
               body,
             });
+
+      - name: Submit PR review (as PAT for bot-authored PR)
+        if: github.event.pull_request.user.login == 'github-actions[bot]'
+        uses: actions/github-script@v7
+        env:
+          REVIEW_PATH: ${{ steps.codex.outputs.review_path }}
+          VERDICT: ${{ steps.codex.outputs.verdict }}
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const fs = require('fs');
+            const pr = context.payload.pull_request;
+            const verdict = (process.env.VERDICT || '').trim().toUpperCase();
+            const reviewPath = process.env.REVIEW_PATH;
+            const body = reviewPath && fs.existsSync(reviewPath)
+              ? fs.readFileSync(reviewPath, 'utf8')
+              : '(no review text)';
+
+            const event = verdict === 'APPROVE' ? 'APPROVE' : 'REQUEST_CHANGES';
+
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              event,
+              body,
             });
 
       - name: Notify Telegram (review result)
