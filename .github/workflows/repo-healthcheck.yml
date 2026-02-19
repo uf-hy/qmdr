@@ -1,0 +1,86 @@
+name: Repo Healthcheck
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 11:00 Asia/Shanghai (03:00 UTC)
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: Install dependencies (frozen)
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun test
+
+      - name: Remote-only invariant checks
+        run: |
+          set -euo pipefail
+
+          node - <<'NODE'
+          const p = require('./package.json');
+          const deps = p.dependencies || {};
+          const banned = ['node-llama-cpp', 'ollama'];
+          const found = banned.filter(x => x in deps);
+          if (found.length) {
+            console.error('Banned deps still present:', found.join(', '));
+            process.exit(1);
+          }
+          console.log('OK: banned deps not present');
+          NODE
+
+          # Fail if local-LLM strings still exist in src (excluding test files)
+          if rg -n "node-llama-cpp|ollama|LlamaCpp|GGUF|gguf|local-llm" src --glob '!**/*.test.ts' ; then
+            echo "Found banned local-LLM references in src/";
+            exit 1;
+          fi
+          echo "OK: no banned local-LLM references in src/"
+
+      - name: CLI smoke (help)
+        run: bun src/qmd.ts --help >/dev/null
+
+      - name: Notify tracker issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue_number = 25;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              '❌ Repo Healthcheck failed',
+              '',
+              `Run: ${runUrl}`,
+              `Commit: ${context.sha}`,
+              `Workflow: ${context.workflow}`,
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body,
+            });
