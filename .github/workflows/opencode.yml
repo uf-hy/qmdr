@@ -140,7 +140,7 @@ jobs:
         id: pr
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.PAT_TOKEN }}
+          token: ${{ secrets.PAT }}
           branch: codex/issue-${{ github.event.issue.number }}
           title: "🤖 Codex: ${{ github.event.issue.title }}"
           body: |
