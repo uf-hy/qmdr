@@ -79,7 +79,7 @@ jobs:
             }
 
       - name: Run Codex Review (structured JSON, with context)
-        id: codex
+        id: codex_run
         env:
           CUSTOM_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
           HAS_PREV: ${{ steps.prev_review.outputs.has_prev }}
@@ -185,10 +185,11 @@ jobs:
           print(verdict)
           PY
 
+      - name: Parse Codex output
+        id: codex
+        run: |
           VERDICT=$(python3 -c 'import json; print(json.load(open("/tmp/review_out.json"))["verdict"])')
           echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
-
-          # 避免多行 output 分隔符坑：把 review 写到临时文件并输出路径
           cp /tmp/review.md "$RUNNER_TEMP/review.md"
           echo "review_path=$RUNNER_TEMP/review.md" >> $GITHUB_OUTPUT
 
