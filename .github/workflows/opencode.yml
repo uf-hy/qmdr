@@ -140,7 +140,7 @@ jobs:
         id: pr
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
           branch: codex/issue-${{ github.event.issue.number }}
           title: "🤖 Codex: ${{ github.event.issue.title }}"
           body: |
@@ -149,6 +149,8 @@ jobs:
             
             Closes #${{ github.event.issue.number }}
           commit-message: "feat: codex auto-fix #${{ github.event.issue.number }}"
+          committer: Codex <codex@users.noreply.github.com>
+          author: Codex <codex@users.noreply.github.com>
           labels: agent-codex,auto-pr
 
       - name: Comment on issue
