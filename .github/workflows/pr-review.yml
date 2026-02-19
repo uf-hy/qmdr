@@ -1,4 +1,5 @@
 # PR Reviewer - Codex 审查；有问题回传到 Issue 触发下一轮修复（最多 5 轮）
+# Rationale for triggers/tokens: docs/ci.md
 name: PR Reviewer (Codex)
 
 on:
