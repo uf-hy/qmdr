@@ -17,8 +17,6 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as sqliteVec from "sqlite-vec";
 import {
-  LlamaCpp,
-  getDefaultLlamaCpp,
   formatQueryForEmbedding,
   formatDocForEmbedding,
   type RerankDocument,
@@ -1411,12 +1409,8 @@ export function chunkDocument(content: string, maxChars: number = CHUNK_SIZE_CHA
 }
 
 /**
- * Chunk a document by actual token count using the LLM tokenizer.
- * More accurate than character-based chunking but requires async.
- */
-/**
  * Character-based chunking approximation for remote embedding mode.
- * Avoids loading local GGUF tokenizer. Uses ~3.5 chars/token heuristic.
+ * Uses ~3.5 chars/token heuristic.
  */
 function chunkDocumentByChars(
   content: string,
@@ -1468,77 +1462,7 @@ export async function chunkDocumentByTokens(
   maxTokens: number = CHUNK_SIZE_TOKENS,
   overlapTokens: number = CHUNK_OVERLAP_TOKENS
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
-  // If remote embedding is enabled, use character-based chunking
-  // to avoid loading local GGUF models for tokenization
-  if (process.env.QMD_EMBED_PROVIDER === 'siliconflow') {
-    return chunkDocumentByChars(content, maxTokens, overlapTokens);
-  }
-
-  const llm = getDefaultLlamaCpp();
-
-  // Tokenize once upfront
-  const allTokens = await llm.tokenize(content);
-  const totalTokens = allTokens.length;
-
-  if (totalTokens <= maxTokens) {
-    return [{ text: content, pos: 0, tokens: totalTokens }];
-  }
-
-  const chunks: { text: string; pos: number; tokens: number }[] = [];
-  const step = maxTokens - overlapTokens;
-  const avgCharsPerToken = content.length / totalTokens;
-  let tokenPos = 0;
-
-  while (tokenPos < totalTokens) {
-    const chunkEnd = Math.min(tokenPos + maxTokens, totalTokens);
-    const chunkTokens = allTokens.slice(tokenPos, chunkEnd);
-    let chunkText = await llm.detokenize(chunkTokens);
-
-    // Find a good break point if not at end of document
-    if (chunkEnd < totalTokens) {
-      const searchStart = Math.floor(chunkText.length * 0.7);
-      const searchSlice = chunkText.slice(searchStart);
-
-      let breakOffset = -1;
-      const paragraphBreak = searchSlice.lastIndexOf('\n\n');
-      if (paragraphBreak >= 0) {
-        breakOffset = paragraphBreak + 2;
-      } else {
-        const sentenceEnd = Math.max(
-          searchSlice.lastIndexOf('. '),
-          searchSlice.lastIndexOf('.\n'),
-          searchSlice.lastIndexOf('? '),
-          searchSlice.lastIndexOf('?\n'),
-          searchSlice.lastIndexOf('! '),
-          searchSlice.lastIndexOf('!\n')
-        );
-        if (sentenceEnd >= 0) {
-          breakOffset = sentenceEnd + 2;
-        } else {
-          const lineBreak = searchSlice.lastIndexOf('\n');
-          if (lineBreak >= 0) {
-            breakOffset = lineBreak + 1;
-          }
-        }
-      }
-
-      if (breakOffset >= 0) {
-        chunkText = chunkText.slice(0, searchStart + breakOffset);
-      }
-    }
-
-    // Approximate character position based on token position
-    const charPos = Math.floor(tokenPos * avgCharsPerToken);
-    chunks.push({ text: chunkText, pos: charPos, tokens: chunkTokens.length });
-
-    // Move forward
-    if (chunkEnd >= totalTokens) break;
-
-    // Advance by step tokens (maxTokens - overlap)
-    tokenPos += step;
-  }
-
-  return chunks;
+  return chunkDocumentByChars(content, maxTokens, overlapTokens);
 }
 
 // =============================================================================
@@ -2278,40 +2202,49 @@ function getRemoteEmbedder(): RemoteLLM | null {
   const sfApiKey = process.env.QMD_SILICONFLOW_API_KEY;
   const gmApiKey = process.env.QMD_GEMINI_API_KEY;
   const oaApiKey = process.env.QMD_OPENAI_API_KEY;
+  const dsApiKey = process.env.QMD_DASHSCOPE_API_KEY;
   const rerankMode = (process.env.QMD_RERANK_MODE as 'llm' | 'rerank' | undefined) || 'llm';
   const sfLlmRerankModel = process.env.QMD_SILICONFLOW_LLM_RERANK_MODEL || process.env.QMD_LLM_RERANK_MODEL || 'zai-org/GLM-4.5-Air';
-  const hasAnyRemoteKey = !!sfApiKey || !!gmApiKey || !!oaApiKey;
+  const hasAnyRemoteKey = !!sfApiKey || !!gmApiKey || !!oaApiKey || !!dsApiKey;
   if (!hasAnyRemoteKey) {
     _remoteEmbedder = null;
     return null;
   }
   const embedProvider = (process.env.QMD_EMBED_PROVIDER as 'siliconflow' | 'openai' | undefined)
     || (sfApiKey ? 'siliconflow' : (oaApiKey ? 'openai' : undefined));
-  let rerankProvider: 'siliconflow' | 'gemini' | 'openai' | undefined;
-  const configuredRerankProvider = process.env.QMD_RERANK_PROVIDER as 'siliconflow' | 'gemini' | 'openai' | undefined;
+  let rerankProvider: 'siliconflow' | 'gemini' | 'openai' | 'dashscope' | undefined;
+  const configuredRerankProvider = process.env.QMD_RERANK_PROVIDER as 'siliconflow' | 'gemini' | 'openai' | 'dashscope' | undefined;
   if (rerankMode === 'rerank') {
-    if (sfApiKey) {
+    if (configuredRerankProvider === 'dashscope' && dsApiKey) {
+      rerankProvider = 'dashscope';
+    } else if (sfApiKey) {
       rerankProvider = 'siliconflow';
     } else if (configuredRerankProvider === 'gemini' && gmApiKey) {
       rerankProvider = 'gemini';
     } else if (configuredRerankProvider === 'openai' && oaApiKey) {
       rerankProvider = 'openai';
+    } else if (dsApiKey) {
+      rerankProvider = 'dashscope';
     } else {
       rerankProvider = gmApiKey ? 'gemini' : (oaApiKey ? 'openai' : undefined);
     }
   } else {
-    if (configuredRerankProvider === 'gemini' || configuredRerankProvider === 'openai') {
+    if (configuredRerankProvider === 'dashscope' && dsApiKey) {
+      rerankProvider = 'dashscope';
+    } else if (configuredRerankProvider === 'gemini' || configuredRerankProvider === 'openai') {
       rerankProvider = configuredRerankProvider;
     } else if (configuredRerankProvider === 'siliconflow') {
       rerankProvider = sfApiKey ? 'openai' : undefined;
     } else {
-      rerankProvider = sfApiKey ? 'openai' : (gmApiKey ? 'gemini' : (oaApiKey ? 'openai' : undefined));
+      // Prefer explicitly available keys; keep behavior aligned with llm-service.
+      rerankProvider = dsApiKey ? 'dashscope' : (sfApiKey ? 'openai' : (gmApiKey ? 'gemini' : (oaApiKey ? 'openai' : undefined)));
     }
   }
   const queryExpansionProvider = (process.env.QMD_QUERY_EXPANSION_PROVIDER as 'siliconflow' | 'gemini' | 'openai' | undefined)
     || (sfApiKey ? 'siliconflow' : (oaApiKey ? 'openai' : (gmApiKey ? 'gemini' : undefined)));
   _remoteEmbedder = new RemoteLLM({
     rerankProvider: rerankProvider || 'siliconflow',
+    rerankMode,
     embedProvider,
     queryExpansionProvider,
     siliconflow: {
@@ -2332,29 +2265,31 @@ function getRemoteEmbedder(): RemoteLLM | null {
       model: process.env.QMD_OPENAI_MODEL || (sfApiKey ? sfLlmRerankModel : undefined),
       embedModel: process.env.QMD_OPENAI_EMBED_MODEL,
     } : undefined,
+    dashscope: dsApiKey || rerankProvider === 'dashscope' ? {
+      apiKey: dsApiKey || '',
+      baseUrl: process.env.QMD_DASHSCOPE_BASE_URL,
+      model: process.env.QMD_DASHSCOPE_RERANK_MODEL,
+    } : undefined,
   });
   return _remoteEmbedder;
 }
 
 async function getEmbedding(text: string, model: string, isQuery: boolean, session?: ILLMSession): Promise<number[] | null> {
+  void session;
   // Format text using the appropriate prompt template
   const formattedText = isQuery ? formatQueryForEmbedding(text) : formatDocForEmbedding(text);
 
-  // Try remote embedding first
   const remote = getRemoteEmbedder();
-  const useRemoteEmbedding = process.env.QMD_EMBED_PROVIDER === 'siliconflow'
-    || process.env.QMD_EMBED_PROVIDER === 'openai'
-    || (!!process.env.QMD_SILICONFLOW_API_KEY && !process.env.QMD_EMBED_PROVIDER)
-    || (!!process.env.QMD_OPENAI_API_KEY && !process.env.QMD_EMBED_PROVIDER);
-  if (remote && useRemoteEmbedding) {
-    const result = await remote.embed(formattedText, { model, isQuery });
-    return result?.embedding || null;
+  if (!remote) {
+    throw new Error(
+      "Remote embedding is not configured. Set at least one API key (e.g. QMD_SILICONFLOW_API_KEY or QMD_OPENAI_API_KEY)."
+    );
   }
-
-  // Fall back to local
-  const result = session
-    ? await session.embed(formattedText, { model, isQuery })
-    : await getDefaultLlamaCpp().embed(formattedText, { model, isQuery });
+  // Avoid passing the local-default model name into remote providers (e.g. OpenAI).
+  // If the caller uses DEFAULT_EMBED_MODEL, let RemoteLLM pick provider-appropriate defaults
+  // (or env-specific overrides like QMD_OPENAI_EMBED_MODEL / QMD_SILICONFLOW_EMBED_MODEL).
+  const effectiveModel = model === DEFAULT_EMBED_MODEL ? undefined : model;
+  const result = await remote.embed(formattedText, { model: effectiveModel, isQuery });
   return result?.embedding || null;
 }
 
@@ -2426,6 +2361,7 @@ export function insertEmbedding(
 // =============================================================================
 
 export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database): Promise<string[]> {
+  void model;
   // Check cache first
   const cacheKey = getCacheKey("expandQuery", { query, model });
   const cached = getCachedResult(db, cacheKey);
@@ -2435,9 +2371,12 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
   }
 
   const remote = getRemoteEmbedder();
-  const results = remote
-    ? await remote.expandQuery(query, { includeLexical: true })
-    : await getDefaultLlamaCpp().expandQuery(query);
+  if (!remote) {
+    throw new Error(
+      "Remote query expansion is not configured. Set at least one API key (e.g. QMD_SILICONFLOW_API_KEY / QMD_OPENAI_API_KEY / QMD_GEMINI_API_KEY)."
+    );
+  }
+  const results = await remote.expandQuery(query, { includeLexical: true });
   const queryTexts = results.map(r => r.text);
 
   // Cache the expanded queries (excluding original)
@@ -2471,9 +2410,12 @@ export async function rerank(query: string, documents: { file: string; text: str
   // Rerank uncached documents using remote-first strategy
   if (uncachedDocs.length > 0) {
     const remote = getRemoteEmbedder();
-    const rerankResult = remote
-      ? await remote.rerank(query, uncachedDocs, { model })
-      : await getDefaultLlamaCpp().rerank(query, uncachedDocs, { model });
+    if (!remote) {
+      throw new Error(
+        "Remote reranking is not configured. Set at least one API key (e.g. QMD_SILICONFLOW_API_KEY / QMD_OPENAI_API_KEY / QMD_GEMINI_API_KEY / QMD_DASHSCOPE_API_KEY)."
+      );
+    }
+    const rerankResult = await remote.rerank(query, uncachedDocs, { model });
 
     // Cache results
     for (const result of rerankResult.results) {

@@ -2,7 +2,7 @@
  * MCP Server Tests
  *
  * Tests all MCP tools, resources, and prompts.
- * Uses mocked Ollama responses and a test database.
+ * Uses mocked remote LLM responses and a test database.
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
@@ -16,7 +16,6 @@ import { Database } from "bun:sqlite";
 import * as sqliteVec from "sqlite-vec";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getDefaultLlamaCpp, disposeDefaultLlamaCpp } from "./llm";
 import { mkdtemp, writeFile, readdir, unlink, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -31,10 +30,7 @@ let testDb: Database;
 let testDbPath: string;
 let testConfigDir: string;
 
-afterAll(async () => {
-  // Ensure native resources are released to avoid ggml-metal asserts on process exit.
-  await disposeDefaultLlamaCpp();
-});
+let originalFetch: typeof fetch | null = null;
 
 function initTestDatabase(db: Database): void {
   sqliteVec.load(db);
@@ -208,9 +204,62 @@ import type { RankedResult } from "./store";
 
 describe("MCP Server", () => {
   beforeAll(async () => {
-    // LlamaCpp uses node-llama-cpp for local model inference (no HTTP mocking needed)
-    // Use shared singleton to avoid creating multiple instances with separate GPU resources
-    getDefaultLlamaCpp();
+    process.env.QMD_EMBED_PROVIDER = "siliconflow";
+    process.env.QMD_QUERY_EXPANSION_PROVIDER = "siliconflow";
+    process.env.QMD_RERANK_PROVIDER = "siliconflow";
+    process.env.QMD_RERANK_MODE = "rerank";
+    process.env.QMD_SILICONFLOW_API_KEY = "test";
+    process.env.QMD_SILICONFLOW_BASE_URL = "https://example.invalid/v1";
+
+    originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input instanceof URL ? input.toString() : input.url);
+      const bodyText = typeof init?.body === "string" ? init.body : "";
+      const bodyJson = bodyText ? (JSON.parse(bodyText) as any) : null;
+
+      if (url.endsWith("/embeddings")) {
+        const mkEmbedding = () => Array.from({ length: 768 }, () => 0.001);
+        const inputVal = bodyJson?.input;
+        if (Array.isArray(inputVal)) {
+          return Response.json({
+            model: bodyJson?.model || "test-embed",
+            data: inputVal.map((_: unknown, idx: number) => ({ index: idx, embedding: mkEmbedding() })),
+          });
+        }
+        return Response.json({
+          model: bodyJson?.model || "test-embed",
+          data: [{ embedding: mkEmbedding() }],
+        });
+      }
+
+      if (url.endsWith("/rerank")) {
+        const docs: unknown[] = Array.isArray(bodyJson?.documents) ? bodyJson.documents : [];
+        return Response.json({
+          results: docs.map((_: unknown, idx: number) => ({
+            index: idx,
+            relevance_score: Math.max(0, 1 - idx * 0.05),
+          })),
+        });
+      }
+
+      if (url.endsWith("/chat/completions")) {
+        return Response.json({
+          choices: [
+            {
+              message: {
+                content: [
+                  "lex: api documentation",
+                  "vec: api documentation",
+                  "hyde: This document describes API authentication and endpoints.",
+                ].join("\n"),
+              },
+            },
+          ],
+        });
+      }
+
+      return new Response("Not found", { status: 404 });
+    };
 
     // Set up test config directory
     const configPrefix = join(tmpdir(), `qmd-mcp-config-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -243,6 +292,8 @@ describe("MCP Server", () => {
       require("fs").unlinkSync(testDbPath);
     } catch {}
 
+    if (originalFetch) globalThis.fetch = originalFetch;
+
     // Clean up test config directory
     try {
       const files = await readdir(testConfigDir);
@@ -253,6 +304,12 @@ describe("MCP Server", () => {
     } catch {}
 
     delete process.env.QMD_CONFIG_DIR;
+    delete process.env.QMD_EMBED_PROVIDER;
+    delete process.env.QMD_QUERY_EXPANSION_PROVIDER;
+    delete process.env.QMD_RERANK_PROVIDER;
+    delete process.env.QMD_RERANK_MODE;
+    delete process.env.QMD_SILICONFLOW_API_KEY;
+    delete process.env.QMD_SILICONFLOW_BASE_URL;
   });
 
   // ===========================================================================

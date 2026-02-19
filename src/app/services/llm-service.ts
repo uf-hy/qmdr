@@ -1,7 +1,5 @@
 import {
   RemoteLLM,
-  getDefaultLlamaCpp,
-  withLLMSession,
   type ILLMSession,
   type Queryable,
   type RerankDocument,
@@ -106,8 +104,6 @@ export function createLLMService(): LLMPort {
   const remoteConfig = createRemoteConfigFromEnv();
   const remote = remoteConfig ? new RemoteLLM(remoteConfig) : null;
 
-  const isRemoteEmbed = !!process.env.QMD_EMBED_PROVIDER || !!process.env.QMD_SILICONFLOW_API_KEY || !!process.env.QMD_OPENAI_API_KEY;
-
   type ProviderName = "siliconflow" | "gemini" | "openai" | "dashscope";
   const providerHealth = new Map<ProviderName, { consecutiveFailures: number; cooldownUntilMs: number }>();
   const FAILURE_THRESHOLD = 3;
@@ -140,80 +136,99 @@ export function createLLMService(): LLMPort {
     return !!remoteConfig.dashscope?.apiKey;
   };
 
+  const ensureRemote = (): RemoteLLM => {
+    if (!remote) {
+      throw new Error(
+        "No remote LLM configured. Set at least one API key (e.g. QMD_SILICONFLOW_API_KEY / QMD_OPENAI_API_KEY / QMD_GEMINI_API_KEY / QMD_DASHSCOPE_API_KEY)."
+      );
+    }
+    return remote;
+  };
+
   return {
     async withSession<T>(fn: (session?: ILLMSession) => Promise<T>, opts?: { maxDuration?: number; name?: string }): Promise<T> {
-      if (remote && isRemoteEmbed) {
-        return fn(undefined);
-      }
-      return withLLMSession(async (session) => fn(session), {
-        maxDuration: opts?.maxDuration ?? 10 * 60 * 1000,
-        name: opts?.name ?? "llm-service",
-      });
+      void opts;
+      return fn(undefined);
     },
 
     async expandQuery(query: string, options?: ExpandOptions, session?: ILLMSession): Promise<Queryable[]> {
+      void session;
       const includeLexical = options?.includeLexical ?? true;
       const context = options?.context;
       const provider = (remoteConfig?.queryExpansionProvider || remoteConfig?.rerankProvider) as ProviderName | undefined;
-      if (remote && !session && provider && hasRemoteProviderKey(provider) && (process.env.QMD_QUERY_EXPANSION_PROVIDER || process.env.QMD_EMBED_PROVIDER || process.env.QMD_OPENAI_API_KEY)) {
-        if (isCoolingDown(provider)) {
-          // skip remote during cooldown
-        } else {
-          try {
-            const out = await remote.expandQuery(query, { includeLexical, context });
-            recordSuccess(provider);
-            return out;
-          } catch (err) {
-            recordFailure(provider);
-          }
-        }
+
+      // Query expansion is best-effort: if remote isn't configured / cooling down / fails,
+      // degrade to lexical-only.
+      const lexicalFallback = (): Queryable[] => (includeLexical ? [{ type: "lex", text: query }] : []);
+
+      if (!remote || !provider || !hasRemoteProviderKey(provider)) {
+        return lexicalFallback();
       }
-      if (session) {
-        return session.expandQuery(query, { includeLexical, context });
+      if (isCoolingDown(provider)) {
+        return lexicalFallback();
       }
-      return getDefaultLlamaCpp().expandQuery(query, { includeLexical, context });
+
+      try {
+        const out = await remote.expandQuery(query, { includeLexical, context });
+        recordSuccess(provider);
+        return out;
+      } catch (err) {
+        recordFailure(provider);
+        return lexicalFallback();
+      }
     },
 
     async rerank(query: string, documents: RerankDocument[], session?: ILLMSession): Promise<{ file: string; score: number; extract?: string }[]> {
+      void session;
       const provider = remoteConfig?.rerankProvider as ProviderName | undefined;
-      if (remote && provider && hasRemoteProviderKey(provider)) {
-        if (!isCoolingDown(provider)) {
-          try {
-            const result = await remote.rerank(query, documents);
-            recordSuccess(provider);
-            return result.results.map(r => ({ file: r.file, score: r.score, extract: r.extract }));
-          } catch (err) {
-            recordFailure(provider);
-          }
+      const llm = ensureRemote();
+
+      if (provider) {
+        if (!hasRemoteProviderKey(provider)) {
+          throw new Error(`Remote rerank provider "${provider}" is selected but its API key is missing.`);
+        }
+        if (isCoolingDown(provider)) {
+          throw new Error(`Remote provider "${provider}" is cooling down. Please retry later.`);
+        }
+        try {
+          const result = await llm.rerank(query, documents);
+          recordSuccess(provider);
+          return result.results.map(r => ({ file: r.file, score: r.score, extract: r.extract }));
+        } catch (err) {
+          recordFailure(provider);
+          throw err;
         }
       }
-      const result = session
-        ? await session.rerank(query, documents)
-        : await getDefaultLlamaCpp().rerank(query, documents);
+
+      const result = await llm.rerank(query, documents);
       return result.results.map(r => ({ file: r.file, score: r.score, extract: r.extract }));
     },
 
     async embed(text: string, options?: { model?: string; isQuery?: boolean }, session?: ILLMSession): Promise<{ embedding: number[] }> {
+      void session;
       const provider = remoteConfig?.embedProvider as ProviderName | undefined;
-      if (remote && isRemoteEmbed && provider && hasRemoteProviderKey(provider)) {
-        if (!isCoolingDown(provider)) {
-          try {
-            const result = await remote.embed(text, options);
-            if (!result) throw new Error("Remote embedding returned null");
-            recordSuccess(provider);
-            return result;
-          } catch (err) {
-            recordFailure(provider);
-          }
+      const llm = ensureRemote();
+
+      if (provider) {
+        if (!hasRemoteProviderKey(provider)) {
+          throw new Error(`Remote embed provider "${provider}" is selected but its API key is missing.`);
+        }
+        if (isCoolingDown(provider)) {
+          throw new Error(`Remote provider "${provider}" is cooling down. Please retry later.`);
+        }
+        try {
+          const result = await llm.embed(text, options);
+          if (!result) throw new Error("Remote embedding returned null");
+          recordSuccess(provider);
+          return result;
+        } catch (err) {
+          recordFailure(provider);
+          throw err;
         }
       }
-      if (session) {
-        const result = await session.embed(text, options);
-        if (!result) throw new Error("Session embedding returned null");
-        return result;
-      }
-      const result = await getDefaultLlamaCpp().embed(text, options);
-      if (!result) throw new Error("Local embedding returned null");
+
+      const result = await llm.embed(text, options);
+      if (!result) throw new Error("Remote embedding returned null");
       return result;
     },
   };

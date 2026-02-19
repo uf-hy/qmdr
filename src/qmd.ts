@@ -67,7 +67,7 @@ import {
   createStore,
   getDefaultDbPath,
 } from "./store.js";
-import { getDefaultLlamaCpp, disposeDefaultLlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR, type ILLMSession, type RerankDocument, type Queryable, type QueryType, RemoteLLM, type RemoteLLMConfig } from "./llm.js";
+import { type ILLMSession, type RerankDocument, type Queryable, type QueryType, RemoteLLM, type RemoteLLMConfig } from "./llm.js";
 import type { SearchResult, RankedResult } from "./store.js";
 import {
   formatSearchResults,
@@ -89,7 +89,7 @@ import { handleContextCommand } from "./app/commands/context.js";
 import { handleGetCommand, handleMultiGetCommand, handleLsCommand } from "./app/commands/document.js";
 import { handleCollectionCommand } from "./app/commands/collection.js";
 import { handleSearchCommand, handleVSearchCommand, handleQueryCommand } from "./app/commands/search.js";
-import { handleCleanupCommand, handlePullCommand, handleStatusCommand, handleUpdateCommand, handleEmbedCommand, handleMcpCommand, handleDoctorCommand } from "./app/commands/maintenance.js";
+import { handleCleanupCommand, handleStatusCommand, handleUpdateCommand, handleEmbedCommand, handleMcpCommand, handleDoctorCommand } from "./app/commands/maintenance.js";
 import { createLLMService } from "./app/services/llm-service.js";
 import { existsSync } from "fs";
 import { join } from "path";
@@ -1812,194 +1812,106 @@ async function vectorIndex(model: string = DEFAULT_EMBED_MODEL, force: boolean =
   // Hide cursor during embedding
   cursor.hide();
 
-  // Check if remote embedding is available
   const remote = getRemoteLLM();
-  const useRemoteEmbed = !!remote && (
-    process.env.QMD_EMBED_PROVIDER === 'siliconflow' ||
-    (!!process.env.QMD_SILICONFLOW_API_KEY && !process.env.QMD_EMBED_PROVIDER)
-  );
-
-  if (useRemoteEmbed) {
-    // Use remote embedding (no local GGUF model needed)
-    const remoteModel = process.env.QMD_SILICONFLOW_EMBED_MODEL || 'Qwen/Qwen3-Embedding-8B';
-    console.log(`${c.dim}Using remote embedding: SiliconFlow/${remoteModel}${c.reset}\n`);
-
-    // Get embedding dimensions from first chunk
-    progress.indeterminate();
-    const firstChunk = allChunks[0];
-    if (!firstChunk) {
-      throw new Error("No chunks available to embed");
-    }
-    const firstText = formatDocForEmbedding(firstChunk.text, firstChunk.title);
-    const firstResult = await remote.embed(firstText, { model: remoteModel, isQuery: false });
-    if (!firstResult) {
-      throw new Error("Failed to get embedding dimensions from remote provider");
-    }
-    ensureVecTable(db, firstResult.embedding.length);
-
-    let chunksEmbedded = 0, errors = 0, bytesProcessed = 0;
-    const startTime = Date.now();
-    const BATCH_SIZE = parseInt(process.env.QMD_EMBED_BATCH_SIZE || "32", 10);
-
-    for (let batchStart = 0; batchStart < allChunks.length; batchStart += BATCH_SIZE) {
-      const batchEnd = Math.min(batchStart + BATCH_SIZE, allChunks.length);
-      const batch = allChunks.slice(batchStart, batchEnd);
-      const texts = batch.map(chunk => formatDocForEmbedding(chunk.text, chunk.title));
-
-      try {
-        const embeddings = await remote.embedBatch(texts);
-        for (let i = 0; i < batch.length; i++) {
-          const chunk = batch[i]!;
-          const embedding = embeddings[i];
-          if (embedding) {
-            insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), remoteModel, now);
-            chunksEmbedded++;
-          } else {
-            errors++;
-            console.error(`\n${c.yellow}⚠ Error embedding "${chunk.displayName}" chunk ${chunk.seq}${c.reset}`);
-          }
-          bytesProcessed += chunk.bytes;
-        }
-      } catch (err) {
-        for (const chunk of batch) {
-          try {
-            const text = formatDocForEmbedding(chunk.text, chunk.title);
-            const result = await remote.embed(text, { model: remoteModel, isQuery: false });
-            if (result) {
-              insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(result.embedding), remoteModel, now);
-              chunksEmbedded++;
-            } else {
-              errors++;
-            }
-          } catch (innerErr) {
-            errors++;
-            console.error(`\n${c.yellow}⚠ Error embedding "${chunk.displayName}" chunk ${chunk.seq}: ${innerErr}${c.reset}`);
-          }
-          bytesProcessed += chunk.bytes;
-        }
-      }
-
-      const percent = (bytesProcessed / totalBytes) * 100;
-      progress.set(percent);
-
-      const elapsed = (Date.now() - startTime) / 1000;
-      const bytesPerSec = bytesProcessed / elapsed;
-      const remainingBytes = totalBytes - bytesProcessed;
-      const etaSec = remainingBytes / bytesPerSec;
-
-      const bar = renderProgressBar(percent);
-      const percentStr = percent.toFixed(0).padStart(3);
-      const throughput = `${formatBytes(bytesPerSec)}/s`;
-      const eta = etaSec > 0 && isFinite(etaSec) ? ` · ETA ${Math.ceil(etaSec)}s` : '';
-      process.stderr.write(`\r${bar} ${percentStr}% · ${chunksEmbedded}/${totalChunks} chunks · ${throughput}${eta}  `);
-    }
-
-    progress.clear();
+  if (!remote) {
     cursor.show();
-    const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`\n\n${c.green}✓ Embedded ${chunksEmbedded}/${totalChunks} chunks in ${totalTime}s${c.reset}`);
-    if (errors > 0) {
-      console.log(`${c.yellow}  ${errors} errors${c.reset}`);
-    }
-    closeDb();
-    return;
+    throw new Error(
+      "Remote embedding is not configured. Set QMD_EMBED_PROVIDER and an API key (e.g. QMD_SILICONFLOW_API_KEY or QMD_OPENAI_API_KEY)."
+    );
   }
 
-  // Wrap all LLM embedding operations in a session for lifecycle management
-  // Use 30 minute timeout for large collections
-  await withLLMSession(async (session) => {
-    // Get embedding dimensions from first chunk
-    progress.indeterminate();
-    const firstChunk = allChunks[0];
-    if (!firstChunk) {
-      throw new Error("No chunks available to embed");
-    }
-    const firstText = formatDocForEmbedding(firstChunk.text, firstChunk.title);
-    const firstResult = await session.embed(firstText);
-    if (!firstResult) {
-      throw new Error("Failed to get embedding dimensions from first chunk");
-    }
-    ensureVecTable(db, firstResult.embedding.length);
+  const effectiveEmbedProvider = (process.env.QMD_EMBED_PROVIDER as 'siliconflow' | 'openai' | undefined)
+    || (process.env.QMD_SILICONFLOW_API_KEY ? 'siliconflow' : (process.env.QMD_OPENAI_API_KEY ? 'openai' : undefined));
+  if (!effectiveEmbedProvider) {
+    cursor.show();
+    throw new Error(
+      "Remote embedding is not configured. Set QMD_EMBED_PROVIDER (siliconflow|openai) and the corresponding API key."
+    );
+  }
 
-    let chunksEmbedded = 0, errors = 0, bytesProcessed = 0;
-    const startTime = Date.now();
+  const remoteModel = effectiveEmbedProvider === 'openai'
+    ? (process.env.QMD_OPENAI_EMBED_MODEL || 'text-embedding-3-small')
+    : (process.env.QMD_SILICONFLOW_EMBED_MODEL || 'Qwen/Qwen3-Embedding-8B');
+  const providerLabel = effectiveEmbedProvider === 'openai' ? 'OpenAI' : 'SiliconFlow';
+  console.log(`${c.dim}Using remote embedding: ${providerLabel}/${remoteModel}${c.reset}\n`);
 
-    // Batch embedding for better throughput
-    const BATCH_SIZE = parseInt(process.env.QMD_EMBED_BATCH_SIZE || "32", 10);
+  // Get embedding dimensions from first chunk
+  progress.indeterminate();
+  const firstChunk = allChunks[0];
+  if (!firstChunk) {
+    throw new Error("No chunks available to embed");
+  }
+  const firstText = formatDocForEmbedding(firstChunk.text, firstChunk.title);
+  const firstResult = await remote.embed(firstText, { model: remoteModel, isQuery: false });
+  if (!firstResult) {
+    throw new Error("Failed to get embedding dimensions from remote provider");
+  }
+  ensureVecTable(db, firstResult.embedding.length);
 
-    for (let batchStart = 0; batchStart < allChunks.length; batchStart += BATCH_SIZE) {
-      const batchEnd = Math.min(batchStart + BATCH_SIZE, allChunks.length);
-      const batch = allChunks.slice(batchStart, batchEnd);
+  let chunksEmbedded = 0, errors = 0, bytesProcessed = 0;
+  const startTime = Date.now();
+  const BATCH_SIZE = parseInt(process.env.QMD_EMBED_BATCH_SIZE || "32", 10);
 
-      // Format texts for embedding
-      const texts = batch.map(chunk => formatDocForEmbedding(chunk.text, chunk.title));
+  for (let batchStart = 0; batchStart < allChunks.length; batchStart += BATCH_SIZE) {
+    const batchEnd = Math.min(batchStart + BATCH_SIZE, allChunks.length);
+    const batch = allChunks.slice(batchStart, batchEnd);
+    const texts = batch.map(chunk => formatDocForEmbedding(chunk.text, chunk.title));
 
-      try {
-        // Batch embed all texts at once
-        const embeddings = await session.embedBatch(texts);
-
-        // Insert each embedding
-        for (let i = 0; i < batch.length; i++) {
-          const chunk = batch[i]!;
-          const embedding = embeddings[i];
-
-          if (embedding) {
-            insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), model, now);
+    try {
+      const embeddings = await remote.embedBatch(texts);
+      for (let i = 0; i < batch.length; i++) {
+        const chunk = batch[i]!;
+        const embedding = embeddings[i];
+        if (embedding) {
+          insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), remoteModel, now);
+          chunksEmbedded++;
+        } else {
+          errors++;
+          console.error(`\n${c.yellow}⚠ Error embedding "${chunk.displayName}" chunk ${chunk.seq}${c.reset}`);
+        }
+        bytesProcessed += chunk.bytes;
+      }
+    } catch (err) {
+      for (const chunk of batch) {
+        try {
+          const text = formatDocForEmbedding(chunk.text, chunk.title);
+          const result = await remote.embed(text, { model: remoteModel, isQuery: false });
+          if (result) {
+            insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(result.embedding), remoteModel, now);
             chunksEmbedded++;
           } else {
             errors++;
-            console.error(`\n${c.yellow}⚠ Error embedding "${chunk.displayName}" chunk ${chunk.seq}${c.reset}`);
           }
-          bytesProcessed += chunk.bytes;
+        } catch (innerErr) {
+          errors++;
+          console.error(`\n${c.yellow}⚠ Error embedding "${chunk.displayName}" chunk ${chunk.seq}: ${innerErr}${c.reset}`);
         }
-      } catch (err) {
-        // If batch fails, try individual embeddings as fallback
-        for (const chunk of batch) {
-          try {
-            const text = formatDocForEmbedding(chunk.text, chunk.title);
-            const result = await session.embed(text);
-            if (result) {
-              insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(result.embedding), model, now);
-              chunksEmbedded++;
-            } else {
-              errors++;
-            }
-          } catch (innerErr) {
-            errors++;
-            console.error(`\n${c.yellow}⚠ Error embedding "${chunk.displayName}" chunk ${chunk.seq}: ${innerErr}${c.reset}`);
-          }
-          bytesProcessed += chunk.bytes;
-        }
+        bytesProcessed += chunk.bytes;
       }
-
-      const percent = (bytesProcessed / totalBytes) * 100;
-      progress.set(percent);
-
-      const elapsed = (Date.now() - startTime) / 1000;
-      const bytesPerSec = bytesProcessed / elapsed;
-      const remainingBytes = totalBytes - bytesProcessed;
-      const etaSec = remainingBytes / bytesPerSec;
-
-      const bar = renderProgressBar(percent);
-      const percentStr = percent.toFixed(0).padStart(3);
-      const throughput = `${formatBytes(bytesPerSec)}/s`;
-      const eta = elapsed > 2 ? formatETA(etaSec) : "...";
-      const errStr = errors > 0 ? ` ${c.yellow}${errors} err${c.reset}` : "";
-
-      process.stderr.write(`\r${c.cyan}${bar}${c.reset} ${c.bold}${percentStr}%${c.reset} ${c.dim}${chunksEmbedded}/${totalChunks}${c.reset}${errStr} ${c.dim}${throughput} ETA ${eta}${c.reset}   `);
     }
 
-    progress.clear();
-    cursor.show();
-    const totalTimeSec = (Date.now() - startTime) / 1000;
-    const avgThroughput = formatBytes(totalBytes / totalTimeSec);
+    const percent = (bytesProcessed / totalBytes) * 100;
+    progress.set(percent);
 
-    console.log(`\r${c.green}${renderProgressBar(100)}${c.reset} ${c.bold}100%${c.reset}                                    `);
-    console.log(`\n${c.green}✓ Done!${c.reset} Embedded ${c.bold}${chunksEmbedded}${c.reset} chunks from ${c.bold}${totalDocs}${c.reset} documents in ${c.bold}${formatETA(totalTimeSec)}${c.reset} ${c.dim}(${avgThroughput}/s)${c.reset}`);
-    if (errors > 0) {
-      console.log(`${c.yellow}⚠ ${errors} chunks failed${c.reset}`);
-    }
-  }, { maxDuration: 30 * 60 * 1000, name: 'embed-command' });
+    const elapsed = (Date.now() - startTime) / 1000;
+    const bytesPerSec = bytesProcessed / elapsed;
+    const remainingBytes = totalBytes - bytesProcessed;
+    const etaSec = remainingBytes / bytesPerSec;
+
+    const bar = renderProgressBar(percent);
+    const percentStr = percent.toFixed(0).padStart(3);
+    const throughput = `${formatBytes(bytesPerSec)}/s`;
+    const eta = etaSec > 0 && isFinite(etaSec) ? ` · ETA ${Math.ceil(etaSec)}s` : '';
+    process.stderr.write(`\r${bar} ${percentStr}% · ${chunksEmbedded}/${totalChunks} chunks · ${throughput}${eta}  `);
+  }
+
+  progress.clear();
+  cursor.show();
+  const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`\n\n${c.green}✓ Embedded ${chunksEmbedded}/${totalChunks} chunks in ${totalTime}s${c.reset}`);
+  if (errors > 0) {
+    console.log(`${c.yellow}  ${errors} errors${c.reset}`);
+  }
 
   closeDb();
 }
@@ -2985,6 +2897,9 @@ function showHelp(): void {
   console.log("  qmd doctor                    - Diagnose runtime env, providers/models, and vector dimensions");
   console.log("  qmd mcp                       - Start MCP server (for AI agent integration)");
   console.log("");
+  console.log("Note:");
+  console.log("  Local model support has been removed. Configure a remote provider via API keys (QMD_SILICONFLOW_API_KEY / QMD_OPENAI_API_KEY / QMD_GEMINI_API_KEY / QMD_DASHSCOPE_API_KEY).");
+  console.log("");
   console.log("Global options:");
   console.log("  --index <name>             - Use custom index name (default: index)");
   console.log("  --profile                  - Show per-step timing breakdown (query command)");
@@ -3008,30 +2923,7 @@ function showHelp(): void {
   console.log("  --max-bytes <num>          - Skip files larger than N bytes (default: 10240)");
   console.log("  --json/--csv/--md/--xml/--files - Output format (same as search)");
   console.log("");
-  console.log("Models (auto-downloaded from HuggingFace):");
-  console.log("  Embedding: embeddinggemma-300M-Q8_0");
-  console.log("  Reranking: qwen3-reranker-0.6b-q8_0");
-  console.log("  Generation: Qwen3-0.6B-Q8_0");
-  console.log("");
   console.log(`Index: ${getDbPath()}`);
-}
-
-async function pullCommand(refresh: boolean): Promise<void> {
-  const models = [
-    DEFAULT_EMBED_MODEL_URI,
-    DEFAULT_GENERATE_MODEL_URI,
-    DEFAULT_RERANK_MODEL_URI,
-  ];
-  console.log(`${c.bold}Pulling models${c.reset}`);
-  const results = await pullModels(models, {
-    refresh,
-    cacheDir: DEFAULT_MODEL_CACHE_DIR,
-  });
-  for (const result of results) {
-    const size = formatBytes(result.sizeBytes);
-    const note = result.refreshed ? "refreshed" : "cached/checked";
-    console.log(`- ${result.model} -> ${result.path} (${size}, ${note})`);
-  }
 }
 
 function cleanupCommand(): void {
@@ -3509,10 +3401,6 @@ if (import.meta.main) {
       await handleEmbedCommand(cli.values as Record<string, unknown>, { vectorIndex, defaultModel: DEFAULT_EMBED_MODEL });
       break;
 
-    case "pull":
-      await handlePullCommand(cli.values as Record<string, unknown>, { pull: pullCommand });
-      break;
-
     case "search":
       handleSearchCommand(cli.query, cli.opts, { search });
       break;
@@ -3548,9 +3436,6 @@ if (import.meta.main) {
       process.exit(1);
   }
 
-  if (cli.command !== "mcp") {
-    await disposeDefaultLlamaCpp();
-    process.exit(0);
-  }
+  if (cli.command !== "mcp") process.exit(0);
 
 } // end if (import.meta.main)
