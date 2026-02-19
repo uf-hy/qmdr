@@ -1,4 +1,4 @@
-# PR Reviewer — Codex 审查；有问题回传到 Issue 触发下一轮修复（最多 5 轮）
+# PR Reviewer - Codex 审查；有问题回传到 Issue 触发下一轮修复（最多 5 轮）
 name: PR Reviewer (Codex)
 
 on:
@@ -79,7 +79,7 @@ jobs:
             }
 
       - name: Run Codex Review (structured JSON, with context)
-        id: codex
+        id: codex_run
         env:
           CUSTOM_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
           HAS_PREV: ${{ steps.prev_review.outputs.has_prev }}
@@ -159,14 +159,14 @@ jobs:
           for x in data['summary']:
             md.append(f"- {x}")
           md.append("")
-          
+
           # 如果有上次 blocking 检查，先显示这个
           if data.get('prev_blocking_checked'):
             md.append("=== 上次 Blocking 问题检查 ===")
             for x in data['prev_blocking_checked']:
               md.append(f"- {x}")
             md.append("")
-          
+
           md.append("Blocking:")
           if data['blocking']:
             for x in data['blocking']:
@@ -185,20 +185,48 @@ jobs:
           print(verdict)
           PY
 
+      - name: Parse Codex output
+        id: codex
+        run: |
           VERDICT=$(python3 -c 'import json; print(json.load(open("/tmp/review_out.json"))["verdict"])')
           echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
-
-          # 避免多行 output 分隔符坑：把 review 写到临时文件并输出路径
           cp /tmp/review.md "$RUNNER_TEMP/review.md"
           echo "review_path=$RUNNER_TEMP/review.md" >> $GITHUB_OUTPUT
 
-      - name: Submit PR review
+      - name: Submit PR review (as GITHUB_TOKEN)
+        if: github.event.pull_request.user.login != 'github-actions[bot]'
         uses: actions/github-script@v7
         env:
           REVIEW_PATH: ${{ steps.codex.outputs.review_path }}
           VERDICT: ${{ steps.codex.outputs.verdict }}
         with:
-          # 用你的 PAT 提交 review，让 Review 显示为 uf-hy（PR 作者是 GITHUB_TOKEN 创建的 bot，不会撞“自己审自己”）
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const pr = context.payload.pull_request;
+            const verdict = (process.env.VERDICT || '').trim().toUpperCase();
+            const reviewPath = process.env.REVIEW_PATH;
+            const body = reviewPath && fs.existsSync(reviewPath)
+              ? fs.readFileSync(reviewPath, 'utf8')
+              : '(no review text)';
+
+            const event = verdict === 'APPROVE' ? 'APPROVE' : 'REQUEST_CHANGES';
+
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              event,
+              body,
+            });
+
+      - name: Submit PR review (as PAT for bot-authored PR)
+        if: github.event.pull_request.user.login == 'github-actions[bot]'
+        uses: actions/github-script@v7
+        env:
+          REVIEW_PATH: ${{ steps.codex.outputs.review_path }}
+          VERDICT: ${{ steps.codex.outputs.verdict }}
+        with:
           github-token: ${{ secrets.PAT }}
           script: |
             const fs = require('fs');
