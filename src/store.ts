@@ -52,7 +52,9 @@ export const DEFAULT_MULTI_GET_MAX_BYTES = 10 * 1024; // 10KB
 
 // Chunking: configurable via QMD_CHUNK_SIZE_TOKENS and QMD_CHUNK_OVERLAP_TOKENS env vars
 export const CHUNK_SIZE_TOKENS = parseInt(process.env.QMD_CHUNK_SIZE_TOKENS || "200", 10);
-export const CHUNK_OVERLAP_TOKENS = parseInt(process.env.QMD_CHUNK_OVERLAP_TOKENS || "40", 10);
+// Clamp overlap to avoid zero/negative step (which can hang chunking loops)
+const _CHUNK_OVERLAP_TOKENS_RAW = parseInt(process.env.QMD_CHUNK_OVERLAP_TOKENS || "40", 10);
+export const CHUNK_OVERLAP_TOKENS = Math.max(0, Math.min(_CHUNK_OVERLAP_TOKENS_RAW, Math.max(0, CHUNK_SIZE_TOKENS - 1)));
 // Fallback char-based approximation for sync chunking (~4 chars per token)
 export const CHUNK_SIZE_CHARS = CHUNK_SIZE_TOKENS * 4;
 export const CHUNK_OVERLAP_CHARS = CHUNK_OVERLAP_TOKENS * 4;
