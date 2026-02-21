@@ -403,6 +403,86 @@ async function rerank(query: string, documents: { file: string; text: string }[]
   return result.map((r) => ({ file: r.file, score: r.score, extract: r.extract }));
 }
 
+// =============================================================================
+// Optional final-stage LLM filter/extractor ("文献器")
+// =============================================================================
+
+let _llmFilter: { llm: RemoteLLM; model: string } | null = null;
+
+function getLlmFilter(): { llm: RemoteLLM; model: string } | null {
+  if (_llmFilter) return _llmFilter;
+
+  // Provider selection (default: openai-compatible)
+  const provider = (process.env.QMD_LLM_FILTER_PROVIDER as 'openai' | 'gemini' | undefined)
+    || (process.env.QMD_OPENAI_API_KEY ? 'openai' : (process.env.QMD_GEMINI_API_KEY ? 'gemini' : undefined));
+
+  if (!provider) return null;
+
+  if (provider === 'openai') {
+    const apiKey = process.env.QMD_LLM_FILTER_OPENAI_API_KEY || process.env.QMD_OPENAI_API_KEY;
+    if (!apiKey) return null;
+    const baseUrl = process.env.QMD_LLM_FILTER_OPENAI_BASE_URL || process.env.QMD_OPENAI_BASE_URL;
+    const model = process.env.QMD_LLM_FILTER_MODEL || process.env.QMD_LLM_FILTER_OPENAI_MODEL || process.env.QMD_OPENAI_MODEL || 'gpt-4o-mini';
+
+    const cfg: RemoteLLMConfig = {
+      rerankProvider: 'openai',
+      rerankMode: 'llm',
+      openai: { apiKey, baseUrl, model },
+    };
+
+    _llmFilter = { llm: new RemoteLLM(cfg), model };
+    return _llmFilter;
+  }
+
+  if (provider === 'gemini') {
+    const apiKey = process.env.QMD_LLM_FILTER_GEMINI_API_KEY || process.env.QMD_GEMINI_API_KEY;
+    if (!apiKey) return null;
+    const baseUrl = process.env.QMD_LLM_FILTER_GEMINI_BASE_URL || process.env.QMD_GEMINI_BASE_URL;
+    const model = process.env.QMD_LLM_FILTER_MODEL || process.env.QMD_LLM_FILTER_GEMINI_MODEL || process.env.QMD_GEMINI_MODEL || 'gemini-2.5-flash';
+
+    const cfg: RemoteLLMConfig = {
+      rerankProvider: 'gemini',
+      rerankMode: 'llm',
+      gemini: { apiKey, baseUrl, model },
+    };
+
+    _llmFilter = { llm: new RemoteLLM(cfg), model };
+    return _llmFilter;
+  }
+
+  return null;
+}
+
+async function llmFilterExtract(
+  query: string,
+  documents: { file: string; text: string }[],
+  _opts: OutputOptions,
+): Promise<{ file: string; score: number; extract?: string }[]> {
+  if (documents.length === 0) return [];
+
+  const filter = getLlmFilter();
+  if (!filter) return [];
+
+  if (!_quietMode) {
+    process.stderr.write(`${c.dim}LLM 文献器：提取相关内容（${documents.length} items, model=${filter.model}）...${c.reset}
+`);
+  }
+
+  try {
+    const rerankDocs: RerankDocument[] = documents.map((doc) => ({
+      file: doc.file,
+      text: doc.text.slice(0, 4000),
+    }));
+
+    const result = await filter.llm.rerank(query, rerankDocs, { model: filter.model });
+    return result.results.map((r) => ({ file: r.file, score: r.score, extract: r.extract }));
+  } catch (err) {
+    process.stderr.write(`${c.yellow}LLM 文献器失败：${String(err)}${c.reset}
+`);
+    return [];
+  }
+}
+
 function formatTimeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
   if (seconds < 60) return `${seconds}s ago`;
@@ -2530,8 +2610,10 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     // Give 2x weight to original query results (first 2 lists: FTS + vector)
     const weights = rankedLists.map((_, i) => i < 2 ? 2.0 : 1.0);
     const fused = reciprocalRankFusion(rankedLists, weights);
-    // Hard cap reranking for latency/cost. We rerank per-document (best chunk only).
-    const RERANK_DOC_LIMIT = parseInt(process.env.QMD_RERANK_DOC_LIMIT || "40", 10);
+    // Hard cap reranking for latency/cost.
+    // In cross-encoder rerank mode, we can safely rerank more docs than LLM mode.
+    const defaultRerankDocLimit = (process.env.QMD_RERANK_MODE || 'llm') === 'rerank' ? "120" : "40";
+    const RERANK_DOC_LIMIT = parseInt(process.env.QMD_RERANK_DOC_LIMIT || defaultRerankDocLimit, 10);
     const candidates = fused.slice(0, RERANK_DOC_LIMIT);
 
     if (candidates.length === 0) {
@@ -2675,7 +2757,7 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     const candidateMap = new Map(candidates.map(cand => [cand.file, { displayPath: cand.displayPath, title: cand.title, body: cand.body }]));
     const rrfRankMap = new Map(candidates.map((cand, i) => [cand.file, i + 1])); // 1-indexed rank
 
-    const finalResults = Array.from(aggregatedScores.entries()).map(([file, { score: rerankScore, bestChunkIdx, extract }]) => {
+    let finalResults = Array.from(aggregatedScores.entries()).map(([file, { score: rerankScore, bestChunkIdx, extract }]) => {
       const candidate = candidateMap.get(file);
       const chunkInfo = docChunkMap.get(file);
 
@@ -2725,6 +2807,39 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
 
     finalResults.sort((a, b) => b.score - a.score);
 
+    if (_profile) { _timings.push({ step: "排序", ms: Date.now() - _tStep, detail: `${finalResults.length}条结果` }); _tStep = Date.now(); }
+
+    // Optional final-stage LLM filter/extractor ("文献器"):
+    // After cross-encoder rerank, let an LLM select + extract the truly relevant items,
+    // then surface those extracted items first (without dropping the rest).
+    const llmFilterDocLimit = parseInt(process.env.QMD_LLM_FILTER_DOC_LIMIT || "0", 10);
+    if (!hasExtracts && llmFilterDocLimit > 0) {
+      const _tFilter0 = Date.now();
+      const input = finalResults.slice(0, Math.min(finalResults.length, llmFilterDocLimit));
+      const extracted = await llmFilterExtract(query, input.map(r => ({ file: r.file, text: r.body })), opts);
+
+      if (extracted.length > 0) {
+        const byFile = new Map(extracted.map(r => [r.file, r] as const));
+        const selectedSet = new Set(extracted.map(r => r.file));
+        const mapFinal = new Map(finalResults.map(r => [r.file, r] as const));
+
+        const selected: typeof finalResults = [];
+        for (const r of extracted) {
+          const orig = mapFinal.get(r.file);
+          if (!orig) continue;
+          selected.push({ ...orig, body: r.extract || orig.body });
+        }
+        const rest = finalResults.filter(r => !selectedSet.has(r.file));
+        finalResults = [...selected, ...rest];
+      }
+
+      if (_profile) {
+        _timings.push({ step: "文献器", ms: Date.now() - _tFilter0, detail: `${Math.min(finalResults.length, llmFilterDocLimit)}→${extracted.length} 提取` });
+        _tStep = Date.now();
+      }
+    }
+
+
     // DEBUG: after sort
     if (_verbose) {
       console.log("\n=== AFTER SORT ===");
@@ -2743,7 +2858,6 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     // });
 
     if (_profile) {
-      _timings.push({ step: "排序", ms: Date.now() - _tStep, detail: `${finalResults.length}条结果` });
       const totalMs = Date.now() - _t0;
       process.stderr.write(`\n${c.dim}步骤\tms\t占比\t详情${c.reset}\n`);
       for (const t of _timings) {
