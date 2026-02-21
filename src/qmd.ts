@@ -2810,8 +2810,8 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
     if (_profile) { _timings.push({ step: "排序", ms: Date.now() - _tStep, detail: `${finalResults.length}条结果` }); _tStep = Date.now(); }
 
     // Optional final-stage LLM filter/extractor ("文献器"):
-    // After cross-encoder rerank, let an LLM select + extract the truly relevant items,
-    // then surface those extracted items first (without dropping the rest).
+    // After cross-encoder rerank, let an LLM select + extract the truly relevant items.
+    // IMPORTANT: do NOT reorder results here — keep the reranker-based ranking stable.
     const llmFilterDocLimit = parseInt(process.env.QMD_LLM_FILTER_DOC_LIMIT || "0", 10);
     if (!hasExtracts && llmFilterDocLimit > 0) {
       const _tFilter0 = Date.now();
@@ -2819,22 +2819,16 @@ async function _querySearchImpl(query: string, opts: OutputOptions, embedModel: 
       const extracted = await llmFilterExtract(query, input.map(r => ({ file: r.file, text: r.body })), opts);
 
       if (extracted.length > 0) {
-        const byFile = new Map(extracted.map(r => [r.file, r] as const));
-        const selectedSet = new Set(extracted.map(r => r.file));
-        const mapFinal = new Map(finalResults.map(r => [r.file, r] as const));
-
-        const selected: typeof finalResults = [];
-        for (const r of extracted) {
-          const orig = mapFinal.get(r.file);
-          if (!orig) continue;
-          selected.push({ ...orig, body: r.extract || orig.body });
-        }
-        const rest = finalResults.filter(r => !selectedSet.has(r.file));
-        finalResults = [...selected, ...rest];
+        const extractByFile = new Map(extracted.map(r => [r.file, r.extract] as const));
+        // Keep ordering; only replace the snippet/body with extracted content when available.
+        finalResults = finalResults.map(r => {
+          const ex = extractByFile.get(r.file);
+          return ex ? { ...r, body: ex } : r;
+        });
       }
 
       if (_profile) {
-        _timings.push({ step: "文献器", ms: Date.now() - _tFilter0, detail: `${Math.min(finalResults.length, llmFilterDocLimit)}→${extracted.length} 提取` });
+        _timings.push({ step: "文献器", ms: Date.now() - _tFilter0, detail: `${Math.min(finalResults.length, llmFilterDocLimit)}→${extracted.length} 提取(不改排序)` });
         _tStep = Date.now();
       }
     }

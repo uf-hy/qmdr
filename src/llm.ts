@@ -953,26 +953,9 @@ export class RemoteLLM implements LLM {
     const model = options.model || oa.model || "gpt-4o-mini";
 
     const docsText = documents.map((doc, i) => `[${i}] ${doc.text}`).join("\n---\n");
-    const prompt = [
-      "你是记忆检索助手。根据查询从候选文档中筛选并提取相关信息。",
-      "",
-      `查询：${query}`,
-      "",
-      "候选文档：",
-      docsText,
-      "",
-      "规则：",
-      "1. 只提取与查询直接相关的文档内容，忽略不相关的",
-      "2. 每篇用 [编号] 开头，后面跟提取的核心内容",
-      "3. 用纯文本输出，不要JSON，不要markdown格式符",
-      "4. 没有相关文档则输出 NONE",
-      "5. 多篇文档内容相同或高度重复时，只提取第一篇，跳过后续重复",
-      "6. 优先选择原始数据源（如日记、笔记、配置记录），跳过「对话/搜索会话记录」类文档",
-      "",
-      "示例格式：",
-      "[0] 提取的核心内容",
-      "[3] 另一篇的核心内容",
-    ].join("\n");
+    // Load prompt template from ~/.config/qmd/rerank-prompt.txt if present.
+    // This allows iterating on extract behavior without changing code.
+    const prompt = buildRerankPrompt(query, docsText);
 
     const resp = await fetchWithRetry(`${baseUrl}/chat/completions`, {
       method: "POST",
